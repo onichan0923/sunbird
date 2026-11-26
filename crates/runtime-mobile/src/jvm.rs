@@ -30,6 +30,7 @@ use jni_sys::{
    jclass,
    jint,
    jmethodID,
+   jobject,
    jsize,
    jstring,
 };
@@ -269,6 +270,31 @@ pub fn env() -> Option<*mut JNIEnv> {
       }
       (((**vm).v1_2.AttachCurrentThread)(vm, &raw mut env, ptr::null_mut()) == JNI_OK)
          .then_some(env.cast())
+   }
+}
+
+/// The current Android application, shared by resource and file lookups.
+///
+/// # Safety
+///
+/// `env` belongs to the current thread. The returned reference is local to the
+/// caller's frame.
+pub unsafe fn application(env: *mut JNIEnv) -> Result<jobject, String> {
+   const APPLICATION: Class = class!(android::app::Application);
+   // SAFETY: the system class and method signature are checked before use.
+   unsafe {
+      let thread = class!(android::app::ActivityThread).find(env)?;
+      let current = static_method(
+         env,
+         thread,
+         c"currentApplication",
+         signature!(() -> APPLICATION),
+      )?;
+      let app = jni!(env, CallStaticObjectMethodA, thread, current, ptr::null());
+      if clear_exception(env) || app.is_null() {
+         return Err("no Android Application".to_owned());
+      }
+      Ok(app)
    }
 }
 

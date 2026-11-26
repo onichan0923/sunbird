@@ -96,10 +96,14 @@ impl Patches {
             payload,
          } = &item.event
          else {
-            if phoenix_runtime::remote::enabled()
-               && let DispatchEvent::Host { event, .. } = &item.event
-            {
-               phoenix_runtime::remote::record(&crate::debug::Trace::HostEvent { event: *event });
+            if let DispatchEvent::Host { event, .. } = &item.event {
+               #[cfg(target_os = "android")]
+               crate::appearance::host_event(*event);
+               if phoenix_runtime::remote::enabled() {
+                  phoenix_runtime::remote::record(&crate::debug::Trace::HostEvent {
+                     event: *event,
+                  });
+               }
             }
             frames.push(raw);
             continue;

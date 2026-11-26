@@ -974,7 +974,22 @@ declare namespace Phoenix {
     define<const S extends Record<string, SettingSpec>>(schema: S): SettingValues<S>;
   }
 
+  type MonetTone = 0 | 10 | 50 | 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900 | 1000;
+  type MonetPalette = Record<"accent1" | "accent2" | "accent3" | "neutral1" | "neutral2", Record<MonetTone, number>>;
+  interface SystemAppearance {
+    /** Android UI_MODE_NIGHT, or null when unspecified. */
+    dark: boolean | null;
+    /** Unsigned ARGB framework colors on Android 12+, or null if unavailable. */
+    monet: MonetPalette | null;
+  }
+
   interface Api {
+    /** Android system resources. Each call returns a fresh snapshot. */
+    readonly appearance?: {
+      get(): SystemAppearance | null;
+      /** Rechecks system colors on appearance and app lifecycle events. Returns an unsubscribe function. */
+      onChange(listener: (state: SystemAppearance) => void): () => void;
+    };
     readonly gateway: Gateway;
     /// Observes a hook point after the client handled it.
     on<P>(sig: Sig<P>, listener: (payload: P) => void): void;

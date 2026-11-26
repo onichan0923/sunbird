@@ -35,6 +35,8 @@ use crate::{
 /// next to the core's registry.
 #[derive(Default)]
 pub struct Mobile<'js> {
+   #[cfg(target_os = "android")]
+   pub appearance:    RefCell<Vec<crate::appearance::Listener<'js>>>,
    pub ui:            RefCell<HashMap<ContributionId, Callbacks<'js>>>,
    /// Slash commands by lowercase name, with the plugin that registered each.
    pub commands:      RefCell<HashMap<String, (String, Function<'js>)>>,
@@ -62,6 +64,8 @@ unsafe impl<'js> JsLifetime<'js> for Mobile<'js> {
 
 /// Drops what `name` registered and takes down its pages, banners and mounts.
 pub fn unload(ctx: &Ctx<'_>, name: &str) {
+   #[cfg(target_os = "android")]
+   crate::appearance::unload(ctx, name);
    if let Some(core) = ctx.userdata::<phoenix_runtime::js::Registry<'_>>() {
       patches::set_interceptors(core.interceptors.borrow().len());
    }

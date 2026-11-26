@@ -92,10 +92,20 @@ pub enum Event {
    Read,
    Timer,
    Ws,
+   Appearance,
+   App,
 }
 
 impl Event {
-   const ALL: [Self; 5] = [Self::Http, Self::Picked, Self::Read, Self::Timer, Self::Ws];
+   const ALL: [Self; 7] = [
+      Self::Http,
+      Self::Picked,
+      Self::Read,
+      Self::Timer,
+      Self::Ws,
+      Self::Appearance,
+      Self::App,
+   ];
 
    const fn name(self) -> &'static str {
       match self {
@@ -104,6 +114,8 @@ impl Event {
          Self::Read => "@read",
          Self::Timer => "@timer",
          Self::Ws => "@ws",
+         Self::Appearance => "@appearance",
+         Self::App => "@app",
       }
    }
 }

@@ -27,6 +27,7 @@ use crate::{
       CLASS,
       Class,
       STRING,
+      application,
       class,
       jni,
       method,
@@ -34,8 +35,6 @@ use crate::{
    },
 };
 
-const ACTIVITY_THREAD: Class = class!(android::app::ActivityThread);
-const APPLICATION: Class = class!(android::app::Application);
 const CONTEXT: Class = class!(android::content::Context);
 const INTENT: Class = class!(android::content::Intent);
 const URI: Class = class!(android::net::Uri);
@@ -104,29 +103,6 @@ pub fn open(apk: &Path) -> Result<(), String> {
       });
       jni!(env, PopLocalFrame, ptr::null_mut());
       result
-   }
-}
-
-/// The app's `Application`.
-///
-/// # Safety
-///
-/// `env` is the current thread's `JNIEnv`, inside a local frame.
-unsafe fn application(env: *mut JNIEnv) -> Result<jobject, String> {
-   // SAFETY: forwarded from `open`.
-   unsafe {
-      let thread = ACTIVITY_THREAD.find(env)?;
-      let current = jvm::static_method(
-         env,
-         thread,
-         c"currentApplication",
-         signature!(() -> APPLICATION),
-      )?;
-      checked(
-         env,
-         jni!(env, CallStaticObjectMethodA, thread, current, ptr::null()),
-         "no Application",
-      )
    }
 }
 

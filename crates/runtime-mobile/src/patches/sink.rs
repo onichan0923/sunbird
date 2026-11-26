@@ -202,7 +202,11 @@ impl Sink for PatchSink {
    }
 
    fn dispatch(&self, frame: &[u8]) -> Action {
-      if !ACTIVE.load(Ordering::Acquire) && !phoenix_runtime::remote::enabled() {
+      #[cfg(target_os = "android")]
+      let appearance = crate::appearance::active();
+      #[cfg(not(target_os = "android"))]
+      let appearance = false;
+      if !appearance && !ACTIVE.load(Ordering::Acquire) && !phoenix_runtime::remote::enabled() {
          return Action::Pass;
       }
       patches().filter(frame)
