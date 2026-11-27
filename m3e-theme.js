@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.3
+// @version 0.11.4
 // @author onichan0923
 
 (() => {
@@ -250,9 +250,11 @@
           contains(n, c => c.accessibilityId === contextCancel))) break;
       for (const n of others) {
         if (contains(n, c => c.accessibilityId === contextCancel)) continue;
-        for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...flat, gradient: null, backdropBlur: 0 });
+        for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...plainSurface, blur: null });
       }
-      ui.update(host.id, { ...flat, background: others.length === 2 && original(host)?.opaque && others.every(backing) ? conversation.body : 0, gradient: null, radius: 0 });
+      const dock = host.accessibilityId === "composer-floating" || others.some(n => n.accessibilityId === "guard-gradient") ||
+        (others.length === 2 && others.every(backing));
+      ui.update(host.id, { ...plainSurface, blur: null, background: dock ? conversation.body : 0, radius: 0 });
       branch = host;
     }
   }
@@ -288,14 +290,14 @@
     // Paint only the common outer bar. Clear nested backgrounds along control
     // paths without changing native height, hit targets, padding or flex layout.
     const cancel = ui.find(contextCancel).map(id => ui.node(id)).find(n => n && commonFrame(n, bar));
-    ui.update(bar.id, { ...flat, background: conversation.control, ...barRadii(cancel ? 0 : 20, 20) });
+    ui.update(bar.id, { ...plainSurface, blur: null, background: conversation.control, clip: true, ...barRadii(cancel ? 0 : 20, 20) });
     if (cancel) joinedBar = { bar: bar.id, cancel: cancel.id };
     paintDock(bar);
     const cleared = new Set();
     for (const control of [input, ...buttons]) {
       for (let n = parent(control); n && n.id !== bar.id && !cleared.has(n.id); n = parent(n)) {
         cleared.add(n.id);
-        ui.update(n.id, flat);
+        ui.update(n.id, { ...plainSurface, blur: null });
       }
     }
     const trailing = ui.node(bar.children[bar.children.length - 1]);
@@ -847,29 +849,28 @@
     const lane = parent(rail);
     const backdrop = lane && children(lane).find(c => c.id !== rail.id && original(c)?.horizontal && c.children.length === 2);
     if (!backdrop && states.every(v => typeof v !== "boolean")) return;
-    // Both parallel rows share a backing. Transparent shells let the page show
-    // around the selected pill, including the gap at either end.
-    if (backdrop && lane.children.length === 2) {
-      ui.update(lane.id, flat);
+    const track = backdrop && lane.children.length === 2 ? lane : rail;
+    if (track === lane) {
       const indicator = children(backdrop)[0];
       for (const n of descendants(backdrop,3,18)) {
         if (!["view","stack"].includes(kindOf(n))) continue;
         const movingPill = n.id === indicator.id && states.every(v => typeof v !== "boolean");
-        ui.update(n.id,{...flat,background:movingPill ? palette.pressed : 0,radius:18});
+        ui.update(n.id,{...plainSurface,blur:null,background:movingPill ? palette.pressed : 0,radius:18});
       }
     }
     for (let n = backdrop ? parent(lane) : parent(rail); shellNode(n) && n.children.length === 1; n = parent(n)) {
-      ui.update(n.id,flat);
+      ui.update(n.id,{ ...plainSurface, blur: null });
       if (n.id === root.id) break;
     }
-    ui.update(rail.id,flat);
+    if (track !== rail) ui.update(rail.id, { ...plainSurface, blur: null });
+    ui.update(track.id, { ...plainSurface, blur: null, background: conversation.control, radius: 999, clip: true });
     for (const n of descendants(rail,4,32)) {
       if (n.id === rail.id || tabs.some(t => t.id === n.id) || !["view","stack"].includes(kindOf(n))) continue;
-      ui.update(n.id,flat);
+      ui.update(n.id,{ ...plainSurface, blur: null });
     }
     tabs.forEach((tab,i) => {
       const checked = states[i] ?? (typeof states[1-i] === "boolean" && !states[1-i]);
-      ui.update(tab.id,{...flat,background:checked ? palette.accent : 0,radius:18});
+      ui.update(tab.id,{...plainSurface,blur:null,background:checked ? palette.accent : 0,radius:18});
       for (const n of descendants(tab,4,14)) if (kindOf(n) === "text")
         ui.update(n.id,{background:0,bg:0,color:checked ? palette.onAccent : palette.ink});
     });
@@ -1255,11 +1256,11 @@
       for (const control of children(header).slice(0, 2)) {
         const m = original(control)?.margin || [0, 0, 0, 0];
         ui.update(control.id, { margin: [m[0] + insets[0], m[1], m[2] + insets[2],
-          m[3] + (control.id === title.id ? 0 : insets[3])] });
+          m[3] + (control.id === title.id ? 0 : Math.min(insets[3], 4))] });
       }
     }
     ui.update(header.id, { ...squareDrawerTop, bg: 0, background: conversation.header });
-    ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height: 26,
+    ui.update(edge.id, { ...plainSurface, ...barRadii(10, 0), width: "fill", height: 10,
       margin: [0, 0, 0, 0], opacity: 1, background: conversation.body, pointerEvents: "none" });
   }
 
@@ -1773,10 +1774,8 @@
     ui.update(card.id, { ...flat, background: palette.sheet, ...barRadii(24, 24) });
     if (actions === foot) ui.update(last.id, { background: 0 });
     actions.forEach((n, i) => {
-      ui.update(n.id, { ...clearFill, background: i ? palette.row : palette.accent, ...barRadii(18, 18), activeBackground: palette.pressed });
-      const label = buttonLabel(n);
-      for (let inner = parent(label), depth = 0; inner && inner.id !== n.id && depth < 8; inner = parent(inner), depth++) ui.update(inner.id, clearFill);
-      ui.update(buttonLabel(n).id, { color: i ? palette.ink : palette.onAccent });
+      paintButton(n, i ? palette.row : palette.accent, i ? palette.ink : palette.onAccent, buttonLabel(n));
+      ui.update(n.id, barRadii(18, 18));
     });
     return true;
   }
@@ -2019,16 +2018,21 @@
     }
   }
 
-  function paintButton(button, fill, ink) {
-    const nodes = descendants(button, 4, 18);
-    ui.update(button.id, {background: fill, bg: 0, backgroundGradient: null, activeBackground: fill});
-    for (const n of nodes) {
+  // Phoenix 357200 checks blur.fallback before the ordinary background. Set
+  // both on the hit target so a later ordinary fill cannot uncover brand blue.
+  function buttonPaint(fill) {
+    return { background: fill, bg: 0, blur: { fallback: fill }, backgroundGradient: null,
+      activeBackgroundGradient: null, activeBackground: mix(fill, palette.ink, 0.08) };
+  }
+
+  function paintButton(button, fill, ink, label = null) {
+    ui.update(button.id, buttonPaint(fill));
+    for (const n of descendants(button, 5, 24)) {
+      if (n.id === button.id) continue;
       const kind = kindOf(n);
-      if (kind === "text" || kind === "markup") ui.update(n.id, {color: ink});
-      else if (kind === "image") ui.update(n.id, {tint: ink});
-      else if (n !== button && (original(n)?.brandFill || original(n)?.opaque || original(n)?.gradient)) {
-        ui.update(n.id, {background: 0, bg: 0, backgroundGradient: null});
-      }
+      if (kind === "text" || kind === "markup" || n.id === label?.id) ui.update(n.id, { background: 0, color: ink });
+      else if (kind === "image") ui.update(n.id, { tint: ink });
+      else if (shellNode(n)) ui.update(n.id, { background: 0, bg: 0, blur: null, backgroundGradient: null });
     }
   }
 
@@ -2053,34 +2057,11 @@
     if (namedButton && namedButton !== card && namedButton.id !== buttonBranch.id && namedButton.id !== button.id &&
         !childOf(namedButton,buttonBranch.id) && !childOf(button,namedButton.id)) return false;
     rememberLayout("thread-footer",card);
-    ui.update(card.id, { ...flat, background: palette.row, radius: 18 });
+    ui.update(card.id, { ...plainSurface, blur: null, background: palette.row, radius: 18 });
+    for (const branch of parts) if (branch.id !== button.id && shellNode(branch)) ui.update(branch.id, { ...plainSurface, blur: null });
     ui.update(note.id, {color: palette.ink});
-    paintThreadAction(button);
+    paintButton(button, palette.accent, palette.onAccent);
     return true;
-  }
-
-  let threadSkin;
-  function clearThreadSkin() {
-    if (threadSkin) { threadSkin.remove(); threadSkin = null; }
-  }
-  function paintThreadAction(button) {
-    paintButton(button,palette.accent,palette.onAccent);
-    const label = actionLabel(button);
-    if (!label) return;
-    const face = {...clearFill, background:palette.accent, activeBackground:palette.accent};
-    ui.update(label.id,{...face,color:palette.onAccent});
-    if (!ui.mount || button.id === label.id) return;
-    let branch = label;
-    while (branch.parent != null && branch.parent !== button.id) {
-      const wrapper = parent(branch);
-      if (!wrapper) return;
-      if (original(wrapper)?.opaque || original(wrapper)?.gradient) ui.update(wrapper.id,face);
-      branch = wrapper;
-    }
-    if (threadSkin?.id === button.id && threadSkin.before === branch.id && threadSkin.label === label.id && threadSkin.color === palette.accent) return;
-    clearThreadSkin();
-    threadSkin = {id:button.id,before:branch.id,label:label.id,color:palette.accent,remove:ui.mount(button.id,
-      switchFace({width:"fill",height:"fill",radius:original(button)?.topLeft || 8,background:palette.accent}),{before:branch.id})};
   }
 
   function actionLabel(button) {
@@ -2096,7 +2077,7 @@
         if (threadNotice(n,anchor)) return;
       }
       const action=actionIn(anchor) || (interactive(parent(anchor)) ? parent(anchor) : null);
-      if (action && anchor.sheet == null) paintThreadAction(action);
+      if (action && anchor.sheet == null) paintButton(action, palette.accent, palette.onAccent);
     }
   }
   function chatFooter(list) {
@@ -2228,52 +2209,15 @@
   const inboxRows = ["inbox-row","inbox-section","inbox-title","inbox.title","recent-activity-text"];
 
   const requestActions = {prefix:"request-actions-"};
-  const requestFaces = new Map();
-
-  function clearRequestFaces(all = false, recreated = null) {
-    for (const [id, face] of requestFaces) {
-      const host = ui.node(id);
-      if (!all && face.group !== recreated && host?.children.includes(face.before) &&
-          ui.node(face.group)?.accessibilityId === face.name && childOf(host, face.group)) continue;
-      face.remove();
-      requestFaces.delete(id);
-    }
-  }
-
-  function paintRequestButton(group, slot, button, label, fill, ink) {
-    // The hit target may sit inside the rounded face. Stay in this action's
-    // branch and put the backing behind the original localized content.
-    let owner = button;
-    for (let n = button; n && n.id !== group.id; n = parent(n)) {
+  function paintRequestButton(slot, button, fill, ink) {
+    paintButton(button, fill, ink);
+    // Some notification rows round and paint an enclosing slot.
+    if (button.id === slot.id) return;
+    for (let n = parent(button); n; n = parent(n)) {
       const surface = original(n);
-      if (surface?.brandFill || (surface?.topLeft && (surface.opaque || surface.backplate))) owner = n;
+      if (surface?.brandFill || (surface?.topLeft && (surface.opaque || surface.backplate))) ui.update(n.id, buttonPaint(fill));
       if (n.id === slot.id) break;
     }
-    if (label.id === owner.id) {
-      paintButton(button, fill, ink);
-      return;
-    }
-    let branch = label;
-    while (branch.parent !== owner.id) {
-      branch = parent(branch);
-      if (!branch) return;
-    }
-    const radius = original(owner)?.topLeft || 8;
-    const old = requestFaces.get(owner.id);
-    const sameFace = old && old.group === group.id && old.name === group.accessibilityId &&
-      old.before === branch.id && old.fill === fill && old.radius === radius;
-    if (sameFace && old.label === label.id && old.button === button.id && old.ink === ink) return;
-    paintButton(button, fill, ink);
-    ui.update(label.id, {background:0, color:ink});
-    if (owner.id !== button.id) ui.update(owner.id,{background:fill, activeBackground:fill});
-    if (!ui.mount) return;
-    if (sameFace) {
-      Object.assign(old, {button:button.id, label:label.id, ink});
-      return;
-    }
-    const remove = ui.mount(owner.id, switchFace({width:"fill", height:"fill", radius, background:fill}), {before:branch.id});
-    old?.remove();
-    requestFaces.set(owner.id, {group:group.id, name:group.accessibilityId, before:branch.id, button:button.id, label:label.id, ink, fill, radius, remove});
   }
 
   function requestPair(n, group) {
@@ -2284,8 +2228,8 @@
     if (!group && slots[1].accessibilityId !== "ignore" && buttons[1].accessibilityId !== "ignore") return false;
     const labels = buttons.map(actionLabel);
     if (!labels.every(Boolean)) return false;
-    paintRequestButton(group || n,slots[0],buttons[0],labels[0],palette.accent,palette.onAccent);
-    paintRequestButton(group || n,slots[1],buttons[1],labels[1],palette.pressed,palette.ink);
+    paintRequestButton(slots[0],buttons[0],palette.accent,palette.onAccent);
+    paintRequestButton(slots[1],buttons[1],palette.pressed,palette.ink);
     return true;
   }
 
@@ -2403,7 +2347,7 @@
       if (list) {
         rememberLayout("chat-viewport", parent(list) || list);
         chatFooter(list);
-        ui.update(list.id, paneSurface());
+        ui.update(list.id, { ...paneSurface(), scrollFade: [] });
         let joined = false;
         for (const name of [...headerNames, "search.entry"]) forLive(name, h => { if (joinHeaderAndList(h, list)) joined = true; });
         if (!joined) adjacentToolbar(list);
@@ -2423,7 +2367,6 @@
     activeDark = dark;
     clearPickerCorners(true);
     removeSkins(true);
-    clearRequestFaces(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
     ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
@@ -2460,12 +2403,12 @@
     patch("main-tabs-frame-border", drawerEdge);
     patch("main-tabs-frame-border-clip", squareDrawerTop);
     forLive("main-tabs-frame-border", clearFrameBorder);
-    patch("composer-floating", { ...flat, gradient: null });
+    patch("composer-floating", { ...plainSurface, blur: null, background: conversation.body });
     for (const name of headerNames) forLive(name, paintTopInset);
     forLive(channelPanel, styleChannelPanel);
     for (const name of guildHeads) forLive(name, styleGuildHeader);
     for (const name of chromeFrames) forLive(name, paintFrame);
-    patch("guard-gradient", { ...clearFill, gradient: null, opacity: 0 });
+    patch("guard-gradient", { ...plainSurface, blur: null, opacity: 0 });
     forLive("search.entry", styleHeader);
     forLive("composer", styleComposer);
     forLive(contextCancel, styleContext);
@@ -2514,7 +2457,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.3", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.4", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2610,10 +2553,7 @@
     ["social-tabs",paintTabs],
     ...["social-sensitive","social-spam","social-sharing","social-servers","social-pages","social-pager","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
   ];
-  for (const [match,visit] of extraSurfaces) watch(match, match === requestActions ? n => {
-    clearRequestFaces(false, n.id);
-    visit(n);
-  } : visit);
+  for (const [match,visit] of extraSurfaces) watch(match, visit);
   watch("ignore", n => {
     for (let p = parent(n), d = 0; p && d < 8; p = parent(p), d++) {
       if (p.accessibilityId?.startsWith(requestActions.prefix)) { inbox(p); break; }
@@ -2653,10 +2593,14 @@
     } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
   }));
   watchers.push(ui.onEvent("pageSettle", () => {
-    clearRequestFaces();
+    forLive("composer",styleComposer);
     forLive(requestActions,inbox);
     forLive("social-tabs",paintTabs);
-    if (lastList != null) chatFooter(ui.node(lastList));
+    const chat = lastList == null ? null : ui.node(lastList);
+    if (chat) {
+      ui.update(chat.id, { scrollFade: [] });
+      chatFooter(chat);
+    }
     const list = lastSettings == null ? null : ui.node(lastSettings);
     if (list && detailLists.has(list.id)) detailWidgets(list,detailLists.get(list.id));
   }));
@@ -2668,7 +2612,7 @@
     const scrolled = ui.node(event.node);
     if (scrolled && ["scroll","list"].includes(kindOf(scrolled))) {
       for (let n=scrolled,d=0; n && d<10; n=parent(n),d++) {
-        if (inboxPages.includes(n.accessibilityId)) { clearRequestFaces(); inbox(scrolled); break; }
+        if (inboxPages.includes(n.accessibilityId)) { inbox(scrolled); break; }
         const route=detailLists.get(n.id);
         if (route) {detailWidgets(scrolled,route);break;}
       }
@@ -2768,8 +2712,6 @@
     finishDialogWatch();
     stopPickerWatch();
     clearPickerCorners(true);
-    clearThreadSkin();
-    clearRequestFaces(true);
     stopGuildWatch();
     removeSkins(true);
     clearEditing();
