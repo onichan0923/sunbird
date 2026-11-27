@@ -59,6 +59,8 @@
 !plugins/*/src/**/
 !plugins/*/src/**/*.ts
 !plugins/m3e-theme/src/theme.js
+!plugins/m3e-theme/test/
+!plugins/m3e-theme/test/attachments.test.mjs
 !plugins/tsconfig.json
 
 !scripts/
