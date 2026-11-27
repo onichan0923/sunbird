@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.8.0
+// @version 0.8.1
 // @author onichan0923
 
 (() => {
@@ -35,6 +35,7 @@
     "navigation.channel:", "navigation.category:", "navigation.server:", "dm.row:",
   ].map(prefix => ({ prefix }))];
   const headerNames = ["chat-header", "chat-sticky-header", "dm.header"];
+  const channelPanel = "channel-list-panel";
   const guildHeads = ["guild.menu", "guild-header-row", "guild-title", "guild-search"];
   const contextCancel = "composer.context.cancel";
   const detailMatches = ["account-age-group", "notif-in-app", "notif-behavior", "notif-other", "notif-system",
@@ -894,23 +895,81 @@
     }
   }
 
+  const headerEdge = {
+    borderWidth: 0, borderColor: 0, bgBorder: 0, bgBorderWidth: 0, hairline: false,
+    shadow: null, bgShadow: null, activeShadow: null, shadowOutset: null, elevation: 0, elevationColor: 0,
+  };
+
+  function stripHeaderEdge(node) {
+    const info = original(node);
+    if (node && node.id !== ui.root() && ["view", "stack"].includes(info?.kind)) ui.update(node.id, headerEdge);
+  }
+
   function clearGradient(node) {
     if (!node || node.id === ui.root()) return;
     if (original(node)?.gradient || node.accessibilityId === "main-frame-gradient") ui.update(node.id, gradients);
   }
 
-  function clearEdge(node, nested = false) {
-    if (!node || node.id === ui.root()) return;
-    if (node.children.length) {
-      if (!nested && !node.accessibilityId && node.children.length === 1 && !original(node)?.pressable) {
-        clearEdge(ui.node(node.children[0]), true);
-      }
-      return;
-    }
+  function clearEdge(node, atSeam = false, depth = 0) {
+    if (!node || node.id === ui.root() || depth > 3) return;
     const info = original(node);
-    if (info?.pressable || pressable(node)) return;
-    if (dividerName.test(node.accessibilityId || "") || (!node.accessibilityId && info?.kind === "view" &&
-        info.height > 0 && info.height <= 2)) ui.update(node.id, { ...plainSurface });
+    if (info?.pressable || pressable(node) || (info && !["view", "stack"].includes(info.kind))) return;
+    // A device-pixel hairline need not have a numeric height in the mirror.
+    // At the header/list seam a passive, empty view can drop its paint while
+    // keeping the space the host reserved for it.
+    const isLine = dividerName.test(node.accessibilityId || "") || (!node.accessibilityId &&
+      (info?.height > 0 && info.height <= 2 || atSeam && info?.kind === "view" && info.height == null && !node.children.length));
+    if (node.children.length > 1) return;
+    if (isLine) ui.update(node.id, { ...plainSurface, ...headerEdge });
+    if (node.children.length === 1 && (isLine || !node.accessibilityId)) {
+      clearEdge(ui.node(node.children[0]), atSeam, depth + 1);
+    }
+  }
+
+  // Device insets can be padding on the right drawer, or a separate, wrapped
+  // spacer above it. Only bounded, passive spacer branches get a new fill.
+  function tintTopSpacer(node, depth = 0) {
+    if (!node || depth > 3 || node.accessibilityId || node.children.length > 1) return;
+    const info = original(node);
+    if (!info || !["view", "stack"].includes(info.kind) || info.pressable) return;
+    if (node.children.length) {
+      const child = ui.node(node.children[0]);
+      if (!child || child.accessibilityId || !["view", "stack"].includes(original(child)?.kind)) return;
+      tintTopSpacer(child, depth + 1);
+    }
+    if (info.height > 2 && info.height <= 80) {
+      ui.update(node.id, { ...headerEdge, background: conversation.header, ...(info.backplate ? { bg: conversation.header } : {}) });
+    } else if (info.height == null) tintBacking(node, conversation.header);
+  }
+
+  function serverRail(node) {
+    return /^(?:navigation\.(?:server:|messages$|add_server$))/.test(node.accessibilityId || "");
+  }
+
+  function drawerBacking(pane) {
+    let branch = pane;
+    for (let i = 0; branch && branch.id !== ui.root() && i < 10; i++) {
+      const info = original(branch);
+      if (!info || !["view", "stack"].includes(info.kind) || info.pressable || branch.sheet != null) break;
+      tintBacking(branch, conversation.header);
+      stripHeaderEdge(branch);
+      const namedColumn = branch.accessibilityId === channelPanel;
+      if (namedColumn) ui.update(branch.id, { ...headerEdge, background: conversation.header, ...(info.backplate ? { bg: conversation.header } : {}) });
+      const frame = parent(branch);
+      if (!frame || frame.id === ui.root() || frame.children.length > 8) break;
+      const at = frame.children.indexOf(branch.id);
+      const leading = children(frame).slice(0, at);
+      const rail = n => serverRail(n) || ["navigation.messages", "navigation.add_server", { prefix: "navigation.server:" }]
+        .some(match => typeof ui.findDown === "function" && ui.findDown(n.id, match, 5) != null);
+      if (original(frame)?.horizontal && leading.some(rail)) {
+        // This is the right-hand column whose top padding shows through the OS bar.
+        ui.update(branch.id, { ...headerEdge, background: conversation.header, ...(info.backplate ? { bg: conversation.header } : {}) });
+        break;
+      }
+      if (original(frame)?.horizontal || /^(?:main-tabs|home-shell)$/.test(frame.accessibilityId || "")) break;
+      for (const n of leading) tintTopSpacer(n);
+      branch = frame;
+    }
   }
 
   function toolbarRow(node, info = original(node)) {
@@ -921,7 +980,7 @@
 
   // Some headers expose only localized control labels. Look among siblings
   // of the viewport for a compact strip of controls, never in the list rows.
-  function adjacentToolbar(list) {
+  function adjacentToolbar(list, guild = false) {
     let lane = list;
     for (let depth = 0; depth < 5; depth++) {
       const frame = parent(lane);
@@ -934,7 +993,7 @@
           const [n, d] = queue.shift(), info = original(n);
           if (!info || !["view", "stack"].includes(info.kind) || n.children.length > 7 || n.list != null ||
               /dock|composer|message\.|navigation\.|settings/i.test(n.accessibilityId || "")) continue;
-          if (toolbarRow(n, info) && joinHeaderAndList(n, list)) {
+          if (toolbarRow(n, info) && joinHeaderAndList(n, list, guild)) {
             ui.update(n.id, { ...plainSurface, background: conversation.header });
             return;
           }
@@ -952,8 +1011,12 @@
       const info = original(branch);
       if (!info || !["view", "stack"].includes(info.kind)) break;
       // A horizontal container with independent control branches owns the full app bar.
+      if (!info.pressable) {
+        stripHeaderEdge(branch);
+        for (const child of children(branch)) clearEdge(child, branch.children[branch.children.length - 1] === child.id);
+      }
       if (toolbarRow(branch, info)) {
-        ui.update(branch.id, { ...plainSurface, background: conversation.header });
+        ui.update(branch.id, { ...plainSurface, ...headerEdge, background: conversation.header });
         rememberLayout("toolbar", parent(branch) || branch);
         break;
       }
@@ -1005,7 +1068,7 @@
   }
 
   function paneSurface() {
-    return { background: conversation.body, ...barRadii(26, 0), clip: true, borderWidth: 0, borderColor: 0 };
+    return { ...headerEdge, bg: 0, background: conversation.body, ...barRadii(26, 0), clip: true };
   }
 
   function childOf(node, ancestorId) {
@@ -1015,7 +1078,7 @@
     return null;
   }
 
-  function joinHeaderAndList(head, list) {
+  function joinHeaderAndList(head, list, guild = false) {
     const pane = commonFrame(head, list);
     if (!shellNode(pane) || pane.id === head.id || pane.id === list.id) return false;
     const upper = childOf(head, pane.id), lower = childOf(list, pane.id);
@@ -1027,6 +1090,7 @@
     // another navigation page that merely shares the outer transition stack.
     if (upper.id !== head.id && contains(upper, n => ["scroll", "list"].includes(original(n)?.kind), 3)) return false;
 
+    if (guild) drawerBacking(pane);
     const frame = original(pane);
     const otherParts = children(pane).filter(n => n.id !== upper.id && n.id !== lower.id);
     const edgeOnly = n => {
@@ -1036,23 +1100,30 @@
     };
     // This column owns just the toolbar and its scrolling content. Providing its
     // backing makes the top list corners visible even when the column was transparent.
-    if (frame?.kind === "view" && !frame.horizontal && !frame.pressable && !pane.accessibilityId &&
-        upper.id !== lower.id && hi < lo && otherParts.every(edgeOnly) &&
-        (toolbarRow(upper) || toolbarRow(head)) && ["list", "scroll"].includes(original(list)?.kind)) {
-      ui.update(pane.id, { background: conversation.header });
+    const dockOrInset = n => edgeOnly(n) || dockSlots.includes(n.accessibilityId) ||
+      contains(n, c => /^(?:current-user-profile|notifications)$/.test(c.accessibilityId || ""), 3);
+    const guildColumn = guild && guildHeads.includes(head.accessibilityId) &&
+      (!pane.accessibilityId || pane.accessibilityId === channelPanel) && otherParts.every(dockOrInset);
+    const toolbarColumn = !pane.accessibilityId && hi < lo && otherParts.every(edgeOnly) &&
+      (toolbarRow(upper) || toolbarRow(head));
+    if (frame?.kind === "view" && !frame.horizontal && !frame.pressable &&
+        (guildColumn || toolbarColumn) && ["list", "scroll"].includes(original(list)?.kind)) {
+      ui.update(pane.id, { ...headerEdge, bg: 0, background: conversation.header });
     } else tintBacking(pane, conversation.header);
     for (let n = upper, depth = 0; n && n.id !== head.id && depth < 12; depth++) {
       tintBacking(n, conversation.header);
+      stripHeaderEdge(n);
       const next = childOf(head, n.id);
       for (const child of children(n)) if (child.id !== next?.id) {
-        clearEdge(child);
+        clearEdge(child, n.children[n.children.length - 1] === child.id);
         if (!child.children.length && original(child)?.height > 2 && original(child)?.height <= 64) tintBacking(child, conversation.header);
       }
       n = next;
     }
     for (const between of children(pane)) {
       if (between.id === upper.id || between.id === lower.id) continue;
-      clearEdge(between);
+      const index = pane.children.indexOf(between.id);
+      clearEdge(between, index > Math.min(hi, lo) && index < Math.max(hi, lo));
       const info = original(between);
       if (!between.children.length && !info?.pressable && ((info?.height > 2 && info.height <= 64) ||
           (info?.height == null && pane.children.indexOf(between.id) < Math.min(hi, lo)))) tintBacking(between, conversation.header);
@@ -1067,30 +1138,74 @@
     }
     for (let n = viewport, i = 0; n && n.id !== pane.id && i < 12; i++, n = parent(n)) tintBacking(n, conversation.header);
     ui.update(viewport.id, paneSurface());
-    if (viewport.id !== list.id) ui.update(list.id, { ...paneSurface(), ...barRadii(0, 0) });
+    // A native scroll view can draw its own rectangular background over a
+    // rounded wrapper. Keep both surfaces on the same outline.
+    for (let n = list, d = 0; n && n.id !== viewport.id && d < 8; n = parent(n), d++) {
+      ui.update(n.id, paneSurface());
+    }
     rememberLayout("header-and-list", pane);
     return true;
   }
 
   function viewportFor(anchor) {
-    if (anchor.list != null) return ui.node(anchor.list);
-    for (let n = parent(anchor), i = 0; n && i < 12; n = parent(n), i++) {
-      if (["list", "scroll"].includes(original(n)?.kind)) return n;
+    // The owner of row gestures can sit outside both the guild header and
+    // the actual scroll view. Only the nearest viewport should clip the list.
+    if (typeof ui.surface === "function") {
+      for (let n = parent(anchor), i = 0; n && n.id !== ui.root() && i < 12; n = parent(n), i++) {
+        if (["list", "scroll"].includes(original(n)?.kind)) return n;
+      }
     }
-    return null;
+    return anchor.list == null ? null : ui.node(anchor.list);
+  }
+
+  function panelViewport(header, panel) {
+    // Prefer the viewport in the same column as the guild header. The rail
+    // to the left and an open chat to the right have independent scroll views.
+    const queue = [[panel, 0]], candidates = [];
+    for (let i = 0; queue.length && i < 60; i++) {
+      const [n, depth] = queue.shift(), info = original(n);
+      if (!info || n.sheet != null || n.id === header.id || /dock|composer/.test(n.accessibilityId || "")) continue;
+      if (["list", "scroll"].includes(info.kind)) {
+        if (childOf(header, n.id)) continue;
+        if (children(n).slice(0, 8).some(row => contains(row, c => serverRail(c) ||
+            (c.accessibilityId || "").startsWith(messageMatch.prefix), 3))) continue;
+        candidates.push(n);
+        continue;
+      }
+      if (depth < 5 && ["view", "stack"].includes(info.kind) && !info.pressable)
+        for (const child of children(n).slice(0, 12)) queue.push([child, depth + 1]);
+    }
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  function styleChannelPanel(panel) {
+    if (panel.id === ui.root() || panel.sheet != null) return;
+    let header;
+    if (typeof ui.findDown === "function") for (const name of guildHeads) {
+      const id = ui.findDown(panel.id, name, 8);
+      if (id != null) { header = ui.node(id); break; }
+    }
+    if (!header) return;
+    drawerBacking(panel);
+    const view = panelViewport(header, panel);
+    if (view && joinHeaderAndList(header, view, true)) {
+      ui.update(view.id, paneSurface());
+      paintChannelPane(view);
+    }
+    rememberLayout("drawer", panel);
   }
 
   function paintChannelPane(list) {
     if (!list || Date.now() - (seenPanels.get(list.id) || 0) < 180) return;
     let head;
     for (const name of guildHeads) {
-      head = ui.find(name).map(id => ui.node(id)).find(n => n && joinHeaderAndList(n, list));
+      head = ui.find(name).map(id => ui.node(id)).find(n => n && joinHeaderAndList(n, list, true));
       if (head) break;
     }
     rememberLayout("channel-viewport", parent(list) || list);
     if (seenPanels.size >= 64) seenPanels.clear();
     seenPanels.set(list.id, Date.now());
-    if (!head) adjacentToolbar(list);
+    if (!head) adjacentToolbar(list, true);
     if (head) {
       rememberLayout("channel-pane", commonFrame(head, list));
       paintToolbar(head);
@@ -1129,13 +1244,14 @@
   function styleNamedEmbed(node) {
     if (!shellNode(node) || !node.children.length || /thumbnail|preview-image|media|footer|author|description|title/i.test(node.accessibilityId)) return;
     cardSurface(node);
+    return true;
   }
 
   function paintEmbeds(content) {
     // A rich embed has a decorative side stripe beside a column of content.
     // Photo-only attachments and inline text runs have neither this stripe nor
     // this layout. Never recolor the stripe or descend into a recognized card.
-    let found = false;
+    const cards = [];
     const work = children(content).map(node => [node, 0]);
     // In compact messages the text anchor and the embed can be siblings. Limit
     // this second starting point to the rest of the same message's local row.
@@ -1152,7 +1268,10 @@
       const [node, depth] = work.pop();
       if (!shellNode(node)) continue;
       const name = node.accessibilityId || "";
-      if (name.startsWith("embed:")) { styleNamedEmbed(node); found = true; continue; }
+      if (name.startsWith("embed:")) {
+        if (styleNamedEmbed(node)) cards.push(node);
+        continue;
+      }
       if (name || !node.children.length) continue;
       const parts = children(node);
       if (parts.length === 2) {
@@ -1162,13 +1281,13 @@
             children(body).some(n => n.kind === "text" || (shellNode(n) && n.children.length)) &&
             !parts.some(n => n.kind === "image")) {
           cardSurface(node);
-          found = true;
+          cards.push(node);
           continue;
         }
       }
       if (depth < 3 && !pressable(node)) for (const child of parts) work.push([child, depth + 1]);
     }
-    return found;
+    return cards;
   }
 
   function paintCallRows(list) {
@@ -1320,10 +1439,11 @@
     }
   }
 
-  function paintBubble(anchor, hasEmbed) {
+  function paintBubble(anchor, embeds) {
     if (anchor.list == null || anchor.sheet != null) return;
     const id = anchor.accessibilityId.slice(messageMatch.prefix.length);
     if (!/^\d+$/.test(id)) return;
+    const cardIds = new Set(embeds.map(card => card.id));
     let box = anchor;
     // Walk only up this message's column. An avatar, reply preview, another
     // message, a date separator or the list itself marks the outer boundary.
@@ -1339,7 +1459,7 @@
         const n = scan.pop(), aid = n.accessibilityId || "";
         if (/^message\.(?:avatar|content|reply)/.test(aid) || /divider|separator|^navigation\./.test(aid) ||
             (/^message\.(?:author|timestamp):/.test(aid) && !aid.endsWith(":" + id))) { unsafe = true; break; }
-        if (aid === "message.author:" + id || aid === "message.timestamp:" + id ||
+        if (cardIds.has(n.id) || aid === "message.author:" + id || aid === "message.timestamp:" + id ||
             /^(?:embed:|attachment[.:]|message\.attachments?:)/.test(aid)) companion = true;
         scan.push(...children(n));
       }
@@ -1364,15 +1484,25 @@
     const next = pos >= 0 && pos + 1 < list.children.length ? ui.node(list.children[pos + 1]) : null;
     const joinedAbove = messageRow(prev) && !startsGroup(row);
     const joinedBelow = messageRow(next) && !startsGroup(next);
-    // Native cards and images can have an explicit width measured before the
-    // plugin runs. Adding horizontal padding to their column moves them outside it.
-    const rich = hasEmbed || contains(box, n => /^(?:embed:|attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || "") ||
-      original(n)?.kind === "image" && !n.accessibilityId, 5) ||
-      contains(box, n => n.id === anchor.id && n.children.length > 1, 4);
+    // Keep the native leading/trailing inset equal to the bottom inset.
+    // A fixed-width preview or its single-child shell may have been measured
+    // before the bubble had padding. Resolve its width against the padded column.
+    let hasCard = false;
+    for (const card of embeds) {
+      if (card.id === box.id || !childOf(card, box.id)) continue;
+      hasCard = true;
+      ui.update(card.id, { width: "fill", minWidth: 0, shrink: 1 });
+      for (let n = parent(card), i = 0; n && n.id !== box.id && i < 8; n = parent(n), i++) {
+        const info = original(n);
+        if (info?.horizontal || !shellNode(n) || n.children.length !== 1) break;
+        ui.update(n.id, { width: "fill", minWidth: 0, shrink: 1 });
+      }
+    }
+    const media = hasCard || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
     ui.update(box.id, { background: conversation.bubble, radius: 16, minWidth: 0, shrink: 1, clip: true,
       radiusTopLeft: joinedAbove ? 4 : 16, radiusTopRight: joinedAbove ? 4 : 16,
       radiusBottomLeft: joinedBelow ? 4 : 16, radiusBottomRight: joinedBelow ? 4 : 16,
-      padding: rich ? [0, 5, 0, 5] : [10, 5, 10, 5] });
+      padding: media ? [5, 5, 5, 5] : [10, 5, 10, 5] });
   }
 
   function styleChat(node) {
@@ -1427,9 +1557,11 @@
     for (const name of headerNames) patch(name, { background: 0, borderWidth: 0 });
     patch("main-frame-gradient", gradients);
     forLive("main-frame-gradient", clearNamedFade);
-    patch("main-tabs-frame-border", { borderColor: 0, bgBorder: 0, borderWidth: 0, bgBorderWidth: 0 });
+    patch("main-tabs-frame-border", headerEdge);
+    forLive("main-tabs-frame-border", clearFrameBorder);
     patch("composer-floating", { ...flat, gradient: null });
     for (const name of headerNames) forLive(name, paintTopInset);
+    forLive(channelPanel, styleChannelPanel);
     for (const name of guildHeads) forLive(name, styleGuildHeader);
     for (const name of chromeFrames) forLive(name, paintFrame);
     patch("guard-gradient", { ...clearFill, gradient: null, opacity: 0 });
@@ -1478,12 +1610,28 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.8.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.8.1", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
   const chromeFrames = ["main-tabs-frame-content", "main-tabs-frame-panels", "main-tabs-frame-border-clip",
     "main-tabs-dock-frame", "main-tabs-dock-frame-content", ...dockSlots];
+
+  function clearFrameBorder(node) {
+    const pending = [node], layers = [];
+    while (pending.length && layers.length < 12) {
+      const n = pending.pop(), info = original(n);
+      if (!info || info.pressable || !["view", "stack", "image"].includes(info.kind) ||
+          (n.id !== node.id && n.accessibilityId && !dividerName.test(n.accessibilityId))) return;
+      if (n.children.length > 4) return;
+      layers.push(n);
+      pending.push(...children(n));
+    }
+    if (pending.length) return;
+    for (const layer of layers) {
+      ui.update(layer.id, { ...plainSurface, ...headerEdge, ...(original(layer)?.kind === "image" ? { tint: 0 } : {}) });
+    }
+  }
 
   function clearNamedFade(node) {
     const info = original(node);
@@ -1511,6 +1659,9 @@
   function styleGuildHeader(node) {
     applyNativePalette();
     paintToolbar(node);
+    for (let n = parent(node), i = 0; n && i < 12 && n.id !== ui.root(); i++, n = parent(n)) {
+      if (n.accessibilityId === channelPanel) { styleChannelPanel(n); break; }
+    }
     // A guild header can mount before any named channel row. Find the
     // adjacent viewport within this column while the two are on screen.
     let branch = node;
@@ -1532,12 +1683,14 @@
     }
     for (const id of seenPanels.keys()) {
       const list = ui.node(id);
-      if (list) joinHeaderAndList(node, list);
+      if (list) joinHeaderAndList(node, list, true);
     }
     if (recordLayouts) rememberLayout("guild-header", parent(parent(node)) || parent(node) || node);
   }
+  watch("main-tabs-frame-border", clearFrameBorder);
   watch("main-frame-gradient", clearNamedFade);
   for (const name of chromeFrames) watch(name, paintFrame);
+  watch(channelPanel, styleChannelPanel);
   for (const name of guildHeads) watch(name, styleGuildHeader);
   for (const name of headerNames) watch(name, paintTopInset);
   watch(contextCancel, styleContext);
