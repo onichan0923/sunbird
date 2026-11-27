@@ -1617,6 +1617,9 @@ declare namespace Phoenix {
       padding?: [number, number, number, number];
       margin?: [number, number, number, number];
       fill: number | null;
+      /// Original ARGB fills, including translucent message highlights.
+      background?: number | null;
+      bg?: number | null;
       brandFill?: boolean;
       pressable: boolean;
       horizontal: boolean;

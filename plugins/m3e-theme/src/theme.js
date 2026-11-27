@@ -1721,6 +1721,14 @@ if (phoenix.appearance) (() => {
     return true;
   }
 
+  function stripedBody(card) {
+    if (card.children.length !== 2) return null;
+    const [stripe, body] = children(card);
+    if (!shellNode(stripe) || stripe.accessibilityId || stripe.children.length || interactive(stripe) ||
+        !shellNode(body) || body.children.length < 2) return null;
+    return children(body).some(n => kindOf(n) === "text" || (shellNode(n) && n.children.length)) ? body : null;
+  }
+
   function paintEmbeds(content) {
     // A rich embed has a decorative side stripe beside a column of content.
     // Photo-only attachments and inline text runs have neither this stripe nor
@@ -1747,19 +1755,12 @@ if (phoenix.appearance) (() => {
         continue;
       }
       if (name || !node.children.length) continue;
-      const parts = children(node);
-      if (parts.length === 2) {
-        const [stripe, body] = parts;
-        if (shellNode(stripe) && !stripe.accessibilityId && !stripe.children.length && !pressable(stripe) &&
-            shellNode(body) && !body.accessibilityId && body.children.length >= 2 &&
-            children(body).some(n => n.kind === "text" || (shellNode(n) && n.children.length)) &&
-            !parts.some(n => n.kind === "image")) {
-          cardSurface(node);
-          cards.push(node);
-          continue;
-        }
+      if (stripedBody(node)) {
+        cardSurface(node);
+        cards.push(node);
+        continue;
       }
-      if (depth < 3 && !pressable(node)) for (const child of parts) work.push([child, depth + 1]);
+      if (depth < 3 && !pressable(node)) for (const child of children(node)) work.push([child, depth + 1]);
     }
     return cards;
   }
@@ -1940,10 +1941,11 @@ if (phoenix.appearance) (() => {
   // The guest measures attachments before the theme adds horizontal padding.
   // Follow only the image path. Captions, actions and small overlay icons keep
   // their own layout. A fixed-width stack also needs to fit its parent on Android.
-  function fitMediaBranch(node, depth = 0, sizedTile = false) {
+  function fitMediaBranch(node, depth = 0, sizedTile = false, inEmbed = false) {
     if (!node || depth > 7) return false;
     const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
-    if (/avatar|thumb|emoji|badge|icon|reaction|reply|author|timestamp/i.test(name)) return false;
+    if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) ||
+        (!inEmbed && /thumb/i.test(name))) return false;
     if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return false;
     const tall = shape?.height > 40;
     if (kind === "image") {
@@ -1953,17 +1955,109 @@ if (phoenix.appearance) (() => {
       ui.update(node.id, { width: shape?.height > 0 ? "wrap" : "fill", maxWidth: "100%", scale: "fit" });
       return true;
     }
-    if (!shellNode(node) || (shape?.horizontal && node.children.length > 1) ||
-        (shape?.height != null && shape.height <= 40)) return false;
+    if (!shellNode(node) || (shape?.height != null && shape.height <= 40)) return false;
+    if (shape?.horizontal && node.children.length > 1) {
+      // Allocate the width left by the stripe to the padded body. Skip inline
+      // thumbnail/header rows, including those nested below a named embed.
+      const body = inEmbed && stripedBody(node);
+      if (!body || !fitMediaBranch(body, depth + 1, false, true)) return false;
+      ui.update(body.id, { width: 0, flex: 1, minWidth: 0 });
+      return true;
+    }
     let fitted = false;
     for (const part of children(node)) {
-      if (fitMediaBranch(part, depth + 1, sizedTile || tall || /^(?:attachment|media|image)/i.test(name))) fitted = true;
+      if (fitMediaBranch(part, depth + 1, sizedTile || tall || /^(?:attachment|media|image)/i.test(name), inEmbed)) fitted = true;
     }
     if (fitted) ui.update(node.id, kind === "stack" ? { width: "fill" } : { maxWidth: "100%", minWidth: 0 });
     return fitted;
   }
 
   const bubbles = new Map();
+  const rowBoxes = new Map();
+
+  function messageGroup(rowId) {
+    if (rowId == null) return 0;
+    const find = prefix => ui.findDown(rowId, { prefix }, 10);
+    if (find("message.author:") != null || find("message.avatar:") != null ||
+        find("message.reply:") != null || find("reply-preview") != null) return 2;
+    return find("message.content:") == null ? 0 : 1;
+  }
+
+  function refreshJoins(list, rowId) {
+    const rows = list.children, index = rows.indexOf(rowId);
+    if (index < 0) return;
+    const groups = new Map();
+    const group = id => {
+      if (!groups.has(id)) groups.set(id, messageGroup(id));
+      return groups.get(id);
+    };
+    for (let pos = Math.max(0, index - 1); pos <= Math.min(rows.length - 1, index + 1); pos++) {
+      const box = rowBoxes.get(rows[pos]), owner = bubbles.get(box);
+      if (!owner || owner.list !== list.id) continue;
+      const top = group(rows[pos]) === 1 && group(rows[pos - 1]) ? 4 : 16;
+      const bottom = group(rows[pos + 1]) === 1 ? 4 : 16;
+      if (rows[pos] !== rowId && owner.top === top && owner.bottom === bottom) continue;
+      ui.update(box, { radiusTopLeft: top, radiusTopRight: top, radiusBottomLeft: bottom, radiusBottomRight: bottom });
+      owner.top = top;
+      owner.bottom = bottom;
+    }
+  }
+
+  // The native mention stripe is opaque. The row wash is translucent amber
+  // and can be on a backing stack or the row itself. Read only original paint
+  // on the path outside the content. Reply art and media have their own colors.
+  function mentionColor(color) {
+    if (color == null || !(color >>> 24) || color >>> 24 === 255) return false;
+    const r = color >>> 16 & 255, g = color >>> 8 & 255, b = color & 255;
+    return r >= 140 && g >= 85 && r >= g && r - g < 125 && g - b >= 35;
+  }
+
+  function restoreRowWash(paints, keep) {
+    for (const [id, props] of paints || []) {
+      const node = ui.node(id);
+      if (!node) continue;
+      const shape = original(node), restore = {};
+      for (const key of Object.keys(props)) {
+        if (!keep?.get(id)?.[key]) restore[key] = shape?.[key] ?? 0;
+      }
+      if (Object.keys(restore).length) ui.update(id, restore);
+    }
+  }
+
+  function rowWash(box, row, previous) {
+    const paints = new Map();
+    const boxPaint = original(box);
+    let tint = [boxPaint?.background, boxPaint?.bg].find(mentionColor) ?? null;
+    function read(node) {
+      const shape = original(node);
+      if (!shape) return;
+      const mask = {};
+      for (const key of ["background", "bg"]) {
+        if (!mentionColor(shape[key])) continue;
+        tint = shape[key];
+        mask[key] = true;
+      }
+      if (Object.keys(mask).length) paints.set(node.id, mask);
+    }
+    for (let n = box; n; n = parent(n)) {
+      if (n.id !== box.id) read(n);
+      if (n.id === row.id) break;
+      const host = parent(n);
+      if (!host) break;
+      for (const sibling of children(host)) {
+        if (sibling.id === n.id) break;
+        if (shellNode(sibling) && !sibling.children.length && !interactive(sibling) &&
+            (!sibling.accessibilityId || /^(?:mention|highlight|backdrop)/i.test(sibling.accessibilityId))) read(sibling);
+      }
+    }
+    restoreRowWash(previous, paints);
+    for (const [id, mask] of paints) {
+      const clear = {};
+      for (const key of Object.keys(mask)) clear[key] = 0;
+      ui.update(id, clear);
+    }
+    return { paints, tint };
+  }
 
   // On 357200 each message line pairs a 40dp avatar or empty spacer
   // with its content column, including below a reply preview.
@@ -1985,11 +2079,15 @@ if (phoenix.appearance) (() => {
   }
 
   function releaseBubble(boxId) {
+    const owner = bubbles.get(boxId);
+    const active = rowBoxes.get(owner?.row);
+    if (active === boxId) rowBoxes.delete(owner.row);
+    restoreRowWash(owner?.paints, active === boxId ? null : bubbles.get(active)?.paints);
     bubbles.delete(boxId);
     const node = ui.node(boxId);
     if (!node) return;
     const shape = original(node);
-    ui.update(boxId, { background: shape?.fill || 0, padding: shape?.padding || 0, clip: false,
+    ui.update(boxId, { background: shape?.background ?? shape?.fill ?? 0, padding: shape?.padding || 0, clip: false,
       radius: 0, radiusTopLeft: shape?.topLeft || 0, radiusTopRight: shape?.topRight || 0,
       radiusBottomLeft: 0, radiusBottomRight: 0 });
   }
@@ -2060,13 +2158,6 @@ if (phoenix.appearance) (() => {
     const row = childOf(box, anchor.list);
     if (!row || !list) return;
     paintReactions(lane || box, marker);
-    const pos = row && list ? list.children.indexOf(row.id) : -1;
-    const startsGroup = n => contains(n, c => /^message\.(?:author|avatar|reply):|^reply-preview/.test(c.accessibilityId || ""), 5);
-    const messageRow = n => contains(n, c => /^message\.content:\d+$/.test(c.accessibilityId || ""), 5);
-    const prev = pos > 0 ? ui.node(list.children[pos - 1]) : null;
-    const next = pos >= 0 && pos + 1 < list.children.length ? ui.node(list.children[pos + 1]) : null;
-    const joinedAbove = messageRow(prev) && !startsGroup(row);
-    const joinedBelow = messageRow(next) && !startsGroup(next);
     // Keep the native leading/trailing inset equal to the bottom inset.
     // A fixed-width preview or its single-child shell may have been measured
     // before the bubble had padding. Resolve its width against the padded column.
@@ -2074,6 +2165,7 @@ if (phoenix.appearance) (() => {
     for (const card of embeds) {
       if (card.id === box.id || !childOf(card, box.id)) continue;
       hasCard = true;
+      fitMediaBranch(card, 0, false, true);
       ui.update(card.id, { width: "fill", minWidth: 0, shrink: 1 });
       for (let n = parent(card), i = 0; n && n.id !== box.id && i < 8; n = parent(n), i++) {
         const info = original(n);
@@ -2092,11 +2184,14 @@ if (phoenix.appearance) (() => {
     for (const [oldBox, owner] of bubbles) {
       if (oldBox !== box.id && owner.marker === marker.id) releaseBubble(oldBox);
     }
-    bubbles.set(box.id, { marker: marker.id, name: marker.accessibilityId, list: anchor.list });
-    ui.update(box.id, { background: conversation.bubble, radius: 16, clip: media,
-      radiusTopLeft: joinedAbove ? 4 : 16, radiusTopRight: joinedAbove ? 4 : 16,
-      radiusBottomLeft: joinedBelow ? 4 : 16, radiusBottomRight: joinedBelow ? 4 : 16,
-      padding: [10, 5, 10, media ? 10 : 5] });
+    const previous = bubbles.get(box.id);
+    if (previous && previous.row !== row.id && rowBoxes.get(previous.row) === box.id) rowBoxes.delete(previous.row);
+    const { paints, tint } = rowWash(box, row, previous?.paints);
+    bubbles.set(box.id, { marker: marker.id, name: marker.accessibilityId, list: anchor.list, row: row.id, paints });
+    rowBoxes.set(row.id, box.id);
+    ui.update(box.id, { background: tint == null ? conversation.bubble : mix(conversation.bubble, tint, (tint >>> 24) / 255),
+      radius: 16, clip: media || tint != null, padding: [10, 5, 10, media ? 10 : 5] });
+    refreshJoins(list, row.id);
   }
 
   const reactionRows = new Map();
@@ -2609,7 +2704,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.8", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.9", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2721,7 +2816,14 @@ if (phoenix.appearance) (() => {
   watch({ prefix: "phoenix-" }, detailRow);
   for (const name of detailMatches) watch(name, detailRow);
   for (const match of sidebarMatches) watch(match, styleSidebar);
-  watch({ prefix: "embed:" }, styleNamedEmbed);
+  watch({ prefix: "embed:" }, node => {
+    styleNamedEmbed(node);
+    const row = node.list != null && childOf(node, node.list);
+    if (!row || node.sheet != null) return;
+    const id = ui.findDown(row.id, messageMatch, 10);
+    const content = id == null ? null : ui.node(id);
+    if (content) paintBubble(content, paintEmbeds(content));
+  });
   for (const name of ["date-divider", "unread-divider"]) watch(name, clearLabelRules);
   watch(messageMatch, n => { styleChat(n); if (pendingDialog > Date.now() && n.list == null && n.sheet == null) maybeDialog(n); });
   watchers.push(ui.onEvent("rowLongPress", e => { pickedMessage = e.messageId || null; }));
