@@ -68,16 +68,22 @@ onmessage=async({data:r})=>{
     build.addLibrary('libplm.so',await unpack(specs[r.abi]));
     build.addLibrary('libshadowhook_nothing.so',new Uint8Array(await (await get('./vendor/shadow-'+r.abi+'.so')).arrayBuffer()));
     if(r.theme || r.recover){
-      const source=await (await get('./m3e-theme.js?v=116')).text();
+      const source=await (await get('./m3e-theme.js?v=118')).text();
       // The runtime reads this line from the APK before looking up installed
       // JS. The token belongs to this APK so reopening it respects later choices.
       const pause=r.recover?'// @pause-once '+crypto.randomUUID().replaceAll('-','')+'\n':'';
-      build.addPlugin('m3e-theme',pause+source);
+      build.addPlugin('m3e-theme',pause+source.replace(/^\/\/ @enabled false\r?\n/m,''));
     }
     const used=new Set(r.theme||r.recover?['m3e-theme']:[]);
     if(r.systemFont){
       build.addPlugin('system-font',await (await get('./system-font.js?v=031')).text());
       used.add('system-font');
+    }
+    for(const name of r.official ?? []){
+      if(!/^[a-z0-9-]+$/.test(name)||used.has(name))throw new Error('原版插件名稱無效或重複：'+name);
+      const source=await (await get('./official/8559cbe/'+name+'.js')).text();
+      build.addPlugin(name,source);
+      used.add(name);
     }
     for(const file of r.plugins){
       const name=file.name.replace(/\.js$/i,'');

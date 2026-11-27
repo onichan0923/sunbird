@@ -9,7 +9,7 @@
 <link rel="icon" href="data:,">
 <title>Sunbird · Android 修補器</title>
 <link rel="stylesheet" href="./style.css">
-<script type="module" src="./app.js?v=116"></script>
+<script type="module" src="./app.js?v=118"></script>
 </head>
 <body>
 <header><div class="wrap nav"><span class="brand">Sunbird</span><a href="https://github.com/onichan0923/sunbird/tree/android-system-appearance">GitHub ↗</a></div></header>
@@ -31,10 +31,30 @@
 <label>應用程式<select id="mode"><option value="side">與現有 Discord 並存</option><option value="replace">使用 com.discord 套件名稱</option></select></label>
 <div class="grid extra"><label id="package-label">套件名稱<input id="package" value="com.discord.phoenix" spellcheck="false" autocapitalize="none"></label><label>顯示名稱<input id="label" maxlength="50" placeholder="Discord Phoenix" autocomplete="off"></label></div>
 </div></section>
-<section><h2>插件</h2><div class="panel"><label class="check"><input id="theme" type="checkbox" checked><span><strong>M3E 主題</strong><small>0.11.6 · 跟隨系統外觀，Android 12 以上支援莫奈取色</small></span></label>
+<section><h2>插件</h2><div class="panel"><label class="check"><input id="theme" type="checkbox" checked><span><strong>M3E 主題</strong><small>0.11.8 · 跟隨系統外觀，Android 12 以上支援莫奈取色</small></span></label>
 <label class="check"><input id="system-font" type="checkbox"><span><strong>系統字體</strong><small>0.3.1 · 聊天、超連結及通知文字使用 Android 系統字體</small></span></label>
 <label class="check"><input id="recover" type="checkbox"><span><strong>修復 M3E 白屏</strong><small>首次開啟時暫停 M3E，包括手動安裝的同名插件。保留登入、聊天資料及其他插件。</small></span></label>
-<details><summary>加入其他 Sunbird 插件</summary><label class="extra">選擇 JS 檔案<input id="plugins" type="file" multiple accept=".js"></label></details></div></section>
+<label class="check"><input type="checkbox" name="official" value="taptap"><span><strong>Tap Tap</strong><small>連點兩下訊息即可回覆，連點自己的訊息可編輯</small></span></label>
+<details><summary>其他原版插件（17 個）</summary>
+<label class="check"><input type="checkbox" name="official" value="clear-urls"><span><strong>Clear URLs</strong><small>清除連結的追蹤參數</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="dearrow"><span><strong>DeArrow</strong><small>使用 DeArrow 替換 YouTube 標題與縮圖</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="fakenitro"><span><strong>FakeNitro</strong><small>以連結傳送自訂表情並顯示貼圖及 GIF</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="fix-embeds"><span><strong>Fix Embeds</strong><small>修正 X、Instagram 和 TikTok 等連結的預覽</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="global-badges"><span><strong>Global Badges</strong><small>在個人檔案顯示其他客戶端的徽章，會向 Equibadges 取得徽章資料</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="hide-composer-buttons"><span><strong>Hide Composer Buttons</strong><small>隱藏訊息輸入列上選定的按鈕</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="message-latency"><span><strong>Message Latency</strong><small>標記傳送延遲較高的訊息</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="message-logger"><span><strong>Message Logger</strong><small>保留已刪除的訊息與編輯記錄</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="no-profile-themes"><span><strong>No Profile Themes</strong><small>隱藏個人檔案主題、特效與頭像裝飾</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="no-reply-mention"><span><strong>No Reply Mention</strong><small>回覆訊息時預設不提及對方</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="platform-indicators"><span><strong>Platform Indicators</strong><small>顯示對方使用的裝置類型</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="reviewdb"><span><strong>ReviewDB</strong><small>在個人檔案加入 ReviewDB 分頁</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="silent-typing"><span><strong>Silent Typing</strong><small>隱藏自己的輸入中狀態</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="spoiler-mode"><span><strong>Spoiler Mode</strong><small>加入將傳送內容標為防雷的開關</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="text-replace"><span><strong>Text Replace</strong><small>依規則替換自己傳出的文字</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="translate"><span><strong>Translate</strong><small>使用 Kagi 或 Google 翻譯訊息</small></span></label>
+<label class="check"><input type="checkbox" name="official" value="view-raw"><span><strong>View Raw</strong><small>檢視訊息的原始文字與 JSON</small></span></label>
+</details>
+<details><summary>匯入本機插件</summary><label class="extra">選擇 JS 檔案<input id="plugins" type="file" multiple accept=".js"></label></details></div></section>
 <button class="primary" type="submit">修補 APK</button>
 </fieldset>
 </form>

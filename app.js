@@ -70,7 +70,7 @@ form.onsubmit=event=>{
   get('progress').hidden=false;get('status').textContent='準備瀏覽器修補器…';get('controls').disabled=true;
   get('output').scrollIntoView({block:'nearest'});
   try {
-    worker=new Worker(new URL('./worker.js?v=116',import.meta.url),{type:'module'});
+    worker=new Worker(new URL('./worker.js?v=118',import.meta.url),{type:'module'});
     worker.onmessage=({data})=>{
       if(data.kind==='error')return fail(data.message,data.download);
       if(data.kind==='progress'){get('status').textContent=data.message;return;}
@@ -82,6 +82,7 @@ form.onsubmit=event=>{
     };
     worker.onerror=e=>fail(e.message||'無法啟動修補器。請重新整理網頁後再試。',false);
     worker.postMessage({manual,files,version:get('version').value,abi:get('abi').value,density:get('density').value,language:get('language').value,
-      pkg:side?pkg:null,label:get('label').value.trim()||(side?'Discord Phoenix':null),theme:get('theme').checked,systemFont:get('system-font').checked,recover:get('recover').checked,plugins:Array.from(get('plugins').files)});
+      pkg:side?pkg:null,label:get('label').value.trim()||(side?'Discord Phoenix':null),theme:get('theme').checked,systemFont:get('system-font').checked,recover:get('recover').checked,
+      official:Array.from(form.querySelectorAll('input[name="official"]:checked'), input=>input.value),plugins:Array.from(get('plugins').files)});
   } catch(error){fail(error.message,false);}
 };
