@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.6.1
+// @version 0.7.0
 // @author onichan0923
 
 (() => {
@@ -45,6 +45,7 @@
   const switchSkins = new Map();
   const detailLists = new Map();
   let rules = [];
+  let conversation;
   let palette, activeDark, selectedScheme;
   const appearance = phoenix.appearance;
   let system = appearance && appearance.get ? appearance.get() : null;
@@ -87,7 +88,7 @@
   const seenPanels = new Map();
   const layouts = new Map();
   let recordLayouts = false;
-  let nativeScheme = null, lastNativeAt = 0;
+  let nativeScheme = null, lastNativeAt = 0, releaseChrome = null;
 
   // AppState.setTheme uses the host method's field keys, a separate table
   // from ui.update's view property keys. The Android host applies background
@@ -228,7 +229,7 @@
         if (contains(n, c => c.accessibilityId === contextCancel)) continue;
         for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...flat, gradient: null, backdropBlur: 0 });
       }
-      ui.update(host.id, { ...flat, gradient: null, background: palette.canvas, radius: 0 });
+      ui.update(host.id, { ...flat, gradient: null, background: conversation.body, radius: 0 });
       branch = host;
     }
   }
@@ -528,20 +529,50 @@
     switchSkins.set(track.id, { knob: knob.id, remove: [base, moving] });
   }
 
-  function tintSwitch(row, toggle, checked) {
-    if (switchOwners.size >= 512) switchOwners.clear();
+  // Phoenix translates the original knob by 28dp. All artwork below the
+  // knob shares that transform, even if the user reverses the spring.
+  function liveSwitch(toggle, checked) {
+    const { track, knob } = toggle;
+    const previous = switchSkins.get(track.id);
+    if (previous && previous.knob === knob.id && previous.checked === checked) return;
+    // Limit the native 28dp spring to the Material handle's 20dp travel.
+    // Counter-scale the art so circles stay circular. The hit box stays 52dp.
+    const scale = 20 / 28;
+    const wrap = parent(track);
+    ui.update(wrap.id, { width: 52, height: 32, align: "center", justify: "center", radius: 16, clip: true });
+    ui.update(track.id, { width: 52 / scale, minWidth: 52 / scale, height: 32, scaleX: scale, shrink: 0,
+      padding: [16 / scale - 1, 0, 0, 0], align: "center", radius: 16, borderWidth: 0, background: 0, clip: false });
+    ui.update(knob.id, { width: 2, height: 2, maxWidth: 2, maxHeight: 2, margin: 0, background: 0, clip: false });
+    const rail = switchFace({ width: 52, height: 32, radius: 16, scaleX: 1 / scale,
+      background: checked ? palette.accent : palette.handle },
+      checked ? [] : [switchFace({ width: 48, height: 28, radius: 14, background: palette.track })]);
+    const stroke = (width, x, y, rotation) => switchFace({ width, height: 1.8, radius: 0.9,
+      background: palette.accent, translateX: x, translateY: y, rotation });
+    const size = checked ? 24 : 16;
+    const thumb = switchFace({ width: size, height: size, radius: size / 2, scaleX: 1 / scale,
+      background: checked ? palette.onAccent : palette.handle }, checked ?
+      [stroke(5.7, -3.4, 1.2, 45), stroke(11.3, 1.9, -0.8, -45)] : []);
+    const base = ui.mount(track.id, rail, { before: knob.id });
+    const cap = ui.mount(knob.id, thumb);
+    if (previous) for (const remove of previous.remove) remove();
+    switchSkins.set(track.id, { knob: knob.id, checked, remove: [base, cap] });
+  }
+
+  function tintSwitch(row, toggle, reported) {
+    if (switchOwners.size >= 1024) {
+      for (const [id, owner] of switchOwners) if (!ui.node(owner)) switchOwners.delete(id);
+    }
     switchOwners.set(row.id, row.id);
     switchOwners.set(toggle.track.id, row.id);
-    // Some trees expose a Boolean on change; all expose the native thumb
-    // position. Never change accessibilityChecked, translateX or the worklet.
-    if (typeof ui.mount !== "function") {
-      if (typeof checked === "boolean") {
-        ui.update(toggle.track.id, { background: checked ? palette.accent : palette.track,
-          borderColor: palette.handle, borderWidth: checked ? 0 : 2 });
-        ui.update(toggle.knob.id, { background: checked ? palette.onAccent : palette.handle });
-      }
+    const last = switchSkins.get(toggle.track.id);
+    const checked = [row.checked, toggle.track.checked, reported,
+      last && last.knob === toggle.knob.id ? last.checked : null].find(v => typeof v === "boolean");
+    if (typeof checked === "boolean" && ui.mount) {
+      liveSwitch(toggle, checked);
       return;
     }
+    if (typeof ui.mount !== "function") return;
+    if (last && last.knob === toggle.knob.id) return;
     ui.update(toggle.track.id, { width: 52, height: 32, radius: 16, clip: true, align: "center",
       padding: 0, borderWidth: 0, background: palette.track });
     ui.update(toggle.knob.id, { width: 2, height: 2, margin: [-6, 0, 0, 0], clip: false, background: 0 });
@@ -815,10 +846,11 @@
   }
 
   function styleSidebar(node) {
-    const fill = { background: palette.canvas };
+    const content = /^(?:navigation\.(?:channel|category):|dm\.row:)/.test(node.accessibilityId || "");
+    const fill = content ? paneSurface() : { background: conversation.header };
     if (node.list != null && node.list !== ui.root()) {
       ui.update(node.list, fill);
-      if (/^navigation\.(?:channel|category):/.test(node.accessibilityId || "")) paintChannelPane(ui.node(node.list));
+      if (content) paintChannelPane(ui.node(node.list));
       return;
     }
     let group = parent(node);
@@ -827,7 +859,7 @@
       const lanes = children(group);
       if (lanes.filter(n => sidebarRow(n) || (n.children.length === 1 && children(n).some(sidebarRow))).length >= 2) {
         ui.update(group.id, fill);
-        if (/^navigation\.(?:channel|category):/.test(node.accessibilityId || "")) paintChannelPane(group);
+        if (content) paintChannelPane(group);
         const viewport = parent(group);
         if (viewport && viewport.id !== ui.root() && viewport.children.length === 1) ui.update(viewport.id, fill);
         return;
@@ -836,6 +868,25 @@
   }
 
   const dockSlots = ["panels-dock-slot", "main-tabs-screen-dock-slot", "main-tabs-over-stack-dock-slot", "over-stack-dock-slot"];
+  const paneChrome = ["main-tabs", "main-tabs-frame-content", "main-tabs-frame-panels", "main-tabs-frame-border-clip"];
+  const dockFrames = ["main-tabs-dock-frame", "main-tabs-dock-frame-content"];
+  const plainSurface = { ...flat, gradient: null, gradientMask: null, backdropBlur: 0 };
+  const noLine = { ...plainSurface, height: 0, minHeight: 0, opacity: 0 };
+
+  function clearDockBacking(panel) {
+    let branch = panel;
+    for (let i = 0; i < 4 && branch; i++, branch = parent(branch)) {
+      const frame = parent(branch);
+      if (!shellNode(frame) || frame.sheet != null || frame.list != null || frame.children.length > 5) break;
+      const others = children(frame).filter(n => n.id !== branch.id);
+      const backing = n => !pressable(n) && (!n.accessibilityId || n.accessibilityId === "main-frame-gradient") &&
+        (n.kind == null || n.kind === "view") && !n.children.length;
+      if (!others.every(backing)) break;
+      ui.update(frame.id, { ...plainSurface, background: conversation.body });
+      for (const n of others) ui.update(n.id, plainSurface);
+    }
+  }
+
   function paintUserDock(dock, named = false) {
     const queue = [[dock, 0]];
     for (let budget = 75; queue.length && budget > 0; budget--) {
@@ -851,7 +902,8 @@
       const end = parts[parts.length - 1];
       if (parts.length >= 2 && (named || namedEnd(end) || pressable(end)) &&
           parts.slice(0, -1).some(hasIdentity)) {
-        ui.update(n.id, { ...clearFill, background: palette.row });
+        clearDockBacking(n);
+        ui.update(n.id, { ...plainSurface, background: palette.row });
         if (shellNode(end)) ui.update(end.id, { background: palette.sheet });
         return true;
       }
@@ -860,16 +912,68 @@
     return false;
   }
 
+  function clearLabelRules(node) {
+    // Date and unread rows may carry their label in a text or accessibility
+    // node. Only their two flanking strokes are decorative.
+    const parts = children(node);
+    if (parts.length !== 3 || !parts[1].children.length && parts[1].kind !== "text" &&
+        !parts[1].accessibilityId && parts[1].kind != null) return;
+    for (const n of [parts[0], parts[2]]) {
+      if (!n.accessibilityId && !n.children.length && !pressable(n) && (!n.kind || n.kind === "view"))
+        ui.update(n.id, { ...plainSurface, opacity: 0 });
+    }
+  }
+
+  function paneSurface() {
+    return { background: conversation.body, ...barRadii(26, 0), clip: true, borderWidth: 0, borderColor: 0 };
+  }
+
+  function headerEdge(frame) {
+    ui.update(frame.id, { ...flat, background: conversation.header });
+    // Search actions and server icons can also be unnamed leaves. Only clear
+    // the unnamed trailing rule under a row of header controls, or a named divider.
+    const parts = children(frame);
+    const last = parts[parts.length - 1];
+    for (const n of parts) {
+      const trailing = n === last && parts.length === 2 && parts[0].children.length >= 2 &&
+        !n.accessibilityId && !n.children.length && !pressable(n) &&
+        (n.kind === "view" || (!n.kind && contains(parts[0], c => c.accessibilityId === "guild.menu" ||
+          c.accessibilityId === "search.entry", 4)));
+      if (dividerName.test(n.accessibilityId || "") || trailing) ui.update(n.id, { ...flat, opacity: 0, height: 0, minHeight: 0 });
+    }
+  }
+
+  function joinHeaderAndList(head, list) {
+    const pane = commonFrame(head, list);
+    if (!shellNode(pane) || pane.id === list.id || pane.id === head.id) return;
+    let upper = head, lower = list;
+    while (upper && upper.parent !== pane.id) upper = parent(upper);
+    while (lower && lower.parent !== pane.id) lower = parent(lower);
+    if (!upper || !lower || upper.id === lower.id) return;
+    const items = children(pane), hi = items.findIndex(n => n.id === upper.id), lo = items.findIndex(n => n.id === lower.id);
+    ui.update(pane.id, { background: conversation.header });
+    if (hi >= 0 && lo === hi + 2 && divider(items[hi + 1]) && !pressable(items[hi + 1])) {
+      ui.update(items[hi + 1].id, { ...flat, height: 0, minHeight: 0, opacity: 0 });
+    }
+    const beforeList = items[lo - 1];
+    if (lo > 1 && hi < lo - 1 && beforeList && dividerName.test(beforeList.accessibilityId || "") &&
+        !pressable(beforeList) && !beforeList.children.length) ui.update(beforeList.id, noLine);
+    if (upper.id === head.id || (shellNode(upper) && upper.children.length <= 4)) headerEdge(upper);
+    // Apply the rounding to the stationary viewport, never a recycled row.
+    if (lower.id === list.id || (shellNode(lower) && lower.children.length === 1)) ui.update(lower.id, paneSurface());
+  }
+
   function paintChannelPane(list) {
     if (!list || Date.now() - (seenPanels.get(list.id) || 0) < 180) return;
-    if (seenPanels.size >= 64) seenPanels.clear();
-    seenPanels.set(list.id, Date.now());
     const head = ui.find("guild.menu").map(id => ui.node(id)).find(n => n && commonFrame(n, list));
     if (!head) return;
+    if (seenPanels.size >= 64) seenPanels.clear();
+    seenPanels.set(list.id, Date.now());
     const pane = commonFrame(head, list);
     rememberLayout("channel-pane", pane);
     if (shellNode(pane)) ui.update(pane.id, { background: palette.canvas });
     styleGuildHeader(head);
+    joinHeaderAndList(head, list);
     for (const key of dockSlots) forLive(key, n => paintUserDock(n, true));
     let lane = list;
     for (let i = 0; i < 7; i++) {
@@ -884,16 +988,21 @@
   function paintTopInset(header) {
     if (!header || header.sheet != null || header.list != null) return;
     applyNativePalette();
-    const fill = { background: palette.canvas };
+    const fill = { ...plainSurface, background: conversation.header };
     let branch = header;
     for (let i = 0; i < 5; i++) {
       const frame = parent(branch);
       if (!shellNode(frame) || frame.sheet != null || frame.list != null ||
-          frame.children.length > 6 || (frame.accessibilityId && !/header|^chat$|^main-tabs|^navigation/.test(frame.accessibilityId))) break;
+          frame.children.length > 6 || (frame.accessibilityId && !/header|^chat$|^main-tabs|^navigation|^guild[.-]/.test(frame.accessibilityId))) break;
       ui.update(frame.id, fill);
       const at = frame.children.indexOf(branch.id);
       if (at > 0 && at <= 2) for (const spacer of children(frame).slice(0, at)) {
-        if (shellNode(spacer) && !spacer.accessibilityId && !spacer.children.length) ui.update(spacer.id, fill);
+        if (shellNode(spacer) && !spacer.accessibilityId && !pressable(spacer) &&
+            (!spacer.children.length || (spacer.children.length === 1 && children(spacer).every(c =>
+              shellNode(c) && !c.children.length && !c.accessibilityId && !pressable(c))))) {
+          ui.update(spacer.id, fill);
+          for (const layer of children(spacer)) ui.update(layer.id, fill);
+        }
       }
       branch = frame;
     }
@@ -1118,12 +1227,67 @@
     }
   }
 
+  function paintBubble(anchor) {
+    if (anchor.list == null || anchor.sheet != null) return;
+    const id = anchor.accessibilityId.slice(messageMatch.prefix.length);
+    if (!/^\d+$/.test(id)) return;
+    let box = anchor;
+    // Walk only up this message's column. An avatar, reply preview, another
+    // message, a date separator or the list itself marks the outer boundary.
+    for (let depth = 0; depth < 5; depth++) {
+      const up = parent(box);
+      if (!shellNode(up) || up.id === anchor.list || up.sheet != null || up.children.length > 8 ||
+          (up.accessibilityId && up.accessibilityId !== "message.body:" + id)) break;
+      const others = children(up).filter(n => n.id !== box.id);
+      if (!others.length) { if (up.parent === anchor.list) break; box = up; continue; }
+      let companion = false, unsafe = false, budget = 48;
+      const scan = [...others];
+      while (scan.length && budget-- > 0) {
+        const n = scan.pop(), aid = n.accessibilityId || "";
+        if (/^message\.(?:avatar|content|reply)/.test(aid) || /divider|separator|^navigation\./.test(aid) ||
+            (/^message\.(?:author|timestamp):/.test(aid) && !aid.endsWith(":" + id))) { unsafe = true; break; }
+        if (aid === "message.author:" + id || aid === "message.timestamp:" + id ||
+            /^(?:embed:|attachment[.:]|message\.attachments?:)/.test(aid)) companion = true;
+        scan.push(...children(n));
+      }
+      if (unsafe || scan.length || !companion) break;
+      box = up;
+    }
+    // Some builds use a labelled row containing the avatar as the content
+    // anchor. Only its text/media column should receive the background.
+    if (contains(box, n => n.accessibilityId === "message.avatar:" + id, 4)) {
+      const lane = children(box).find(n => !contains(n, c => c.accessibilityId === "message.avatar:" + id, 4) &&
+        contains(n, c => c.accessibilityId === "message.author:" + id || c.accessibilityId === "message.timestamp:" + id, 4));
+      if (!lane) return;
+      box = lane;
+    }
+    let row = box;
+    const list = ui.node(anchor.list);
+    while (row && row.id !== anchor.list && row.parent !== anchor.list) row = parent(row);
+    const pos = row && list ? list.children.indexOf(row.id) : -1;
+    const startsGroup = n => contains(n, c => /^message\.(?:author|avatar|reply):|^reply-preview/.test(c.accessibilityId || ""), 5);
+    const messageRow = n => contains(n, c => /^message\.content:\d+$/.test(c.accessibilityId || ""), 5);
+    const prev = pos > 0 ? ui.node(list.children[pos - 1]) : null;
+    const next = pos >= 0 && pos + 1 < list.children.length ? ui.node(list.children[pos + 1]) : null;
+    const joinedAbove = messageRow(prev) && !startsGroup(row);
+    const joinedBelow = messageRow(next) && !startsGroup(next);
+    ui.update(box.id, { background: conversation.bubble, radius: 16,
+      radiusTopLeft: joinedAbove ? 4 : 16, radiusTopRight: joinedAbove ? 4 : 16,
+      radiusBottomLeft: joinedBelow ? 4 : 16, radiusBottomRight: joinedBelow ? 4 : 16,
+      padding: [10, 5, 10, 5] });
+  }
+
   function styleChat(node) {
     if (node.list != null && node.list !== lastList) {
-      ui.update(node.list, { background: palette.canvas });
+      const list = ui.node(node.list);
+      if (list) {
+        ui.update(list.id, paneSurface());
+        for (const name of headerNames) forLive(name, h => joinHeaderAndList(h, list));
+      }
       lastList = node.list;
       paintCallRows(ui.node(node.list));
     }
+    paintBubble(node);
     paintEmbeds(node);
     if (editingMessage && node.accessibilityId === "message.content:" + editingMessage) forLive(contextCancel, paintEditedMessage);
   }
@@ -1137,6 +1301,14 @@
     removeSkins(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
+    conversation = {
+      header: palette.canvas,
+      body: dark ? mix(palette.canvas, palette.row, 0.48) : palette.row,
+      bubble: dark ? mix(palette.row, palette.accent, 0.055) : mix(palette.canvas, palette.accent, 0.045),
+    };
+    if (releaseChrome) releaseChrome();
+    if (appearance && typeof appearance.setChromeColors === "function")
+      releaseChrome = appearance.setChromeColors(palette.accent, palette.onAccent, conversation.header);
     applyNativePalette(true);
     for (const remove of rules) remove();
     rules = [];
@@ -1150,7 +1322,12 @@
     patch("search.entry", { background: 0, activeBackground: palette.ripple, radius: 20, activeRadius: 20.5 });
     patch({ prefix: "message.author:" }, { fontWeight: 700 });
     patch({ prefix: "message.timestamp:" }, { color: palette.muted });
-    for (const name of [...headerNames, "guild-header-row", "composer-floating"]) patch(name, { ...flat, background: palette.canvas });
+    for (const name of [...headerNames, "guild-header-row"]) patch(name, { ...flat, background: conversation.header });
+    for (const name of paneChrome) patch(name, { ...plainSurface, background: conversation.header });
+    for (const name of dockFrames) patch(name, { ...plainSurface, background: conversation.body });
+    patch("main-frame-gradient", plainSurface);
+    patch("main-tabs-frame-border", plainSurface);
+    patch("composer-floating", { ...flat, background: conversation.body });
     for (const name of headerNames) forLive(name, paintTopInset);
     forLive("guild.menu", styleGuildHeader);
     patch("guard-gradient", { ...clearFill, gradient: null, opacity: 0 });
@@ -1159,6 +1336,7 @@
     forLive(contextCancel, styleContext);
     forLive(searchId, settingsFromSearch);
     forLive(messageMatch, styleChat);
+    for (const name of ["date-divider", "unread-divider"]) forLive(name, clearLabelRules);
     forLive(menuMatch, styleMenu);
     forLive({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
     for (const match of sidebarMatches) forLive(match, styleSidebar);
@@ -1191,7 +1369,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.6.1", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.7.0", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -1200,13 +1378,22 @@
     for (let i = 0; i < 5 && shellNode(n); i++, n = parent(n)) {
       if (n.list != null || n.sheet != null || contains(n, c => sidebarRow(c) || c.kind === "list" || c.kind === "scroll", 2)) break;
       paintTopInset(n);
-      ui.update(n.id, { background: palette.sheet });
+      headerEdge(n);
       if (n.children.length > 1 && i > 0) break;
     }
   }
   for (const slot of dockSlots) watch(slot, n => paintUserDock(n, true));
-  watch("guild.menu", styleGuildHeader);
-  for (const name of headerNames) watch(name, paintTopInset);
+  watch("guild.menu", head => {
+    styleGuildHeader(head);
+    forLive({ prefix: "navigation.channel:" }, n => {
+      if (n.list != null && !seenPanels.has(n.list)) paintChannelPane(ui.node(n.list));
+    });
+  });
+  for (const name of headerNames) watch(name, header => {
+    paintTopInset(header);
+    const list = lastList == null ? null : ui.node(lastList);
+    if (list) joinHeaderAndList(header, list);
+  });
   watch(contextCancel, styleContext);
   watch("delete-message", maybeDialog);
   watch({ prefix: "alert-title:" }, maybeDialog);
@@ -1222,6 +1409,7 @@
   for (const name of detailMatches) watch(name, detailRow);
   for (const match of sidebarMatches) watch(match, styleSidebar);
   watch({ prefix: "embed:" }, styleNamedEmbed);
+  for (const name of ["date-divider", "unread-divider"]) watch(name, clearLabelRules);
   watch(messageMatch, n => { styleChat(n); if (pendingDialog > Date.now() && n.list == null && n.sheet == null) maybeDialog(n); });
   watchers.push(ui.onEvent("rowLongPress", e => { pickedMessage = e.messageId || null; }));
   watchers.push(ui.onEvent("longPress", e => {
@@ -1245,7 +1433,7 @@
     if (editingMessage) forLive(contextCancel, paintEditedMessage);
     if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
     const scrolled = ui.node(event.node);
-    if (scrolled && ui.find("guild.menu").length) paintChannelPane(scrolled);
+    if (scrolled && seenPanels.has(scrolled.id)) paintChannelPane(scrolled);
     const list = lastSettings == null ? null : ui.node(lastSettings);
     if (list && (event.node === list.id || event.node === list.parent)) {
       paintSettingsList(list);
@@ -1283,6 +1471,17 @@
     const input = ui.node(event.node);
     if (input && input.accessibilityId === "composer") styleComposer(input);
   }));
+  if (typeof ui.onChecked === "function") {
+    watchers.push(ui.onChecked(snapshot => {
+      const node = ui.node(snapshot.id);
+      if (!node || typeof node.checked !== "boolean") return;
+      const owner = switchOwners.get(node.id);
+      if (owner == null) return;
+      const row = ui.node(owner);
+      const toggle = row && switchParts(row);
+      if (toggle) tintSwitch(row, toggle, node.checked);
+    }));
+  }
   watchers.push(ui.onEvent("change", event => {
     if (!switchOwners.has(event.node)) return;
     const row = ui.node(switchOwners.get(event.node)), toggle = row && switchParts(row);
@@ -1306,6 +1505,7 @@
   phoenix.onUnload(() => {
     // Omitting the optional background clears the host's cached startup
     // color. Discord supplies its current native palette on the next launch.
+    if (releaseChrome) releaseChrome();
     if (nativeScheme && phoenix.bridge) phoenix.bridge.invoke(9, 84, { [hostTheme.dark]: activeDark });
     finishDialogWatch();
     removeSkins(true);
