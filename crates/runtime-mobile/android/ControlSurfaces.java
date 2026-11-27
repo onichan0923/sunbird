@@ -65,7 +65,7 @@ final class ControlSurfaces implements ViewTreeObserver.OnGlobalLayoutListener, 
         }
         for (Map.Entry<ViewGroup, String> mark : marks.entrySet()) {
             String spec = mark.getValue();
-            if (spec.equals("seam")) continue;
+            if (spec.equals("seam") || spec.equals("seam-actions")) continue;
             ViewGroup host = mark.getKey();
             Surface surface = live.get(host);
             if (surface == null) {
@@ -80,15 +80,20 @@ final class ControlSurfaces implements ViewTreeObserver.OnGlobalLayoutListener, 
                 live.put(host, surface);
                 surface.owner.getOverlay().add(surface);
             }
-            if (surface instanceof Corners) ((Corners) surface).headers.clear();
+            if (surface instanceof Corners) {
+                ((Corners) surface).headers.clear();
+                ((Corners) surface).toolbars.clear();
+            }
             if (surface instanceof Action) ((Action) surface).findLabel();
         }
         for (Map.Entry<ViewGroup, String> mark : marks.entrySet()) {
-            if (!mark.getValue().equals("seam")) continue;
+            boolean toolbar = mark.getValue().equals("seam-actions");
+            if (!toolbar && !mark.getValue().equals("seam")) continue;
             for (ViewParent up = mark.getKey().getParent(); up instanceof ViewGroup; up = up.getParent()) {
                 Surface pane = live.get(up);
                 if (pane instanceof Corners) {
-                    ((Corners) pane).headers.add(mark.getKey());
+                    Corners corners = (Corners) pane;
+                    (toolbar ? corners.toolbars : corners.headers).add(mark.getKey());
                     break;
                 }
             }
@@ -220,6 +225,8 @@ final class ControlSurfaces implements ViewTreeObserver.OnGlobalLayoutListener, 
 
     private static class Corners extends Surface {
         final ArrayList<View> headers = new ArrayList<>();
+        final ArrayList<View> toolbars = new ArrayList<>();
+        private int join;
         private final Path path = new Path();
         private final Rect rect = new Rect();
         private final Rect visible = new Rect();
@@ -236,17 +243,32 @@ final class ControlSurfaces implements ViewTreeObserver.OnGlobalLayoutListener, 
                     y = rect.bottom; left = rect.left; right = rect.right;
                 }
             }
-            if (y < 0) setBounds(0,0,0,0);
-            else setBounds(left, y, right, y + (int)Math.ceil(radius));
+            if (y < 0) {
+                setBounds(0, 0, 0, 0);
+                return;
+            }
+            // Two separately laid out header copies can expose a strip of the list
+            // above the arc. Repaint only the empty band below their visible actions.
+            int bottom = -1;
+            for (View toolbar : toolbars) {
+                if (!contains(toolbar) || !toolbar.isShown() || !toolbar.getLocalVisibleRect(visible)) continue;
+                rect.set(visible);
+                host.offsetDescendantRectToMyCoords(toolbar, rect);
+                bottom = Math.max(bottom, rect.bottom);
+            }
+            join = y;
+            int top = bottom < 0 ? y : Math.min(y, Math.max(y - Math.round(dp(8)), bottom));
+            setBounds(left, top, right, y + (int)Math.ceil(radius));
         }
         protected void onBoundsChange(Rect b) {
             path.reset();
             if (b.isEmpty()) return;
             float r = Math.min(radius, b.width() / 2f);
-            path.moveTo(b.left,b.top); path.lineTo(b.left+r,b.top);
-            path.arcTo(b.left,b.top,b.left+2*r,b.top+2*r,270,-90,false); path.close();
-            path.moveTo(b.right,b.top); path.lineTo(b.right-r,b.top);
-            path.arcTo(b.right-2*r,b.top,b.right,b.top+2*r,270,90,false); path.close();
+            if (b.top < join) path.addRect(b.left, b.top, b.right, join, Path.Direction.CW);
+            path.moveTo(b.left,join); path.lineTo(b.left+r,join);
+            path.arcTo(b.left,join,b.left+2*r,join+2*r,270,-90,false); path.close();
+            path.moveTo(b.right,join); path.lineTo(b.right-r,join);
+            path.arcTo(b.right-2*r,join,b.right,join+2*r,270,90,false); path.close();
         }
         public void draw(Canvas canvas) { canvas.drawPath(path, paint); }
     }

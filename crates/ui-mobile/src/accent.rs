@@ -181,16 +181,16 @@ fn colored(source: u32, target: u32) -> Value {
 }
 
 // Phoenix uses numeric keys for compact records and strings for map records.
-fn run_field(span: &Value, key: Prop) -> Option<&Value> {
-   if let Value::Map(entries) = span {
+fn record_field(record: &Value, key: Prop) -> Option<&Value> {
+   if let Value::Map(entries) = record {
       let name = key.name()?;
       return entries.iter().find(|(k, _)| k == name).map(|(_, v)| v);
    }
-   span.field(key.key())
+   record.field(key.key())
 }
 
-fn set_run_field(span: &mut Value, key: Prop, value: Value) {
-   match span {
+fn set_record_field(record: &mut Value, key: Prop, value: Value) {
+   match record {
       Value::Obj(entries) => {
          if let Some((_, v)) = entries.iter_mut().find(|(k, _)| *k == key.key()) {
             *v = value;
@@ -213,29 +213,37 @@ fn set_run_field(span: &mut Value, key: Prop, value: Value) {
 fn text_run(span: &Value) -> bool {
    matches!(span, Value::Obj(_) | Value::Map(_))
       && !matches!(
-         run_field(span, crate::prop!("code")),
+         record_field(span, crate::prop!("code")),
          Some(Value::Bool(true) | Value::I32(1))
       )
       && !matches!(
-         run_field(span, crate::prop!("image")),
+         record_field(span, crate::prop!("image")),
          Some(Value::Obj(_) | Value::Map(_))
       )
-      && run_field(span, crate::prop!("font")).is_none_or(plain_family)
+      && record_field(span, crate::prop!("font")).is_none_or(plain_family)
 }
 
 fn link_color(span: &Value) -> Option<u32> {
    let url = crate::prop!("url");
    let linked = [url, crate::prop!("link")]
       .into_iter()
-      .filter_map(|k| run_field(span, k))
+      .filter_map(|k| record_field(span, k))
       .any(|v| {
          v.as_str()
-            .or_else(|| run_field(v, url).and_then(Value::as_str))
+            .or_else(|| record_field(v, url).and_then(Value::as_str))
             .is_some_and(|s| s.starts_with("https://") || s.starts_with("http://"))
       });
-   let color = run_field(span, Prop::COLOR).and_then(argb);
+   let color = record_field(span, Prop::COLOR).and_then(argb);
    (linked || color.is_some_and(|c| matches!(tone(c), Some(Tone::Link))))
       .then_some(color.unwrap_or(0xFF00_0000))
+}
+
+fn blur(prop: Prop) -> bool {
+   prop == crate::prop!("blur") || prop == crate::prop!("activeBlur")
+}
+
+pub(crate) fn blur_fallback(value: &Value) -> Option<u32> {
+   record_field(value, crate::prop!("fallback")).and_then(argb)
 }
 
 fn gradient(prop: Prop) -> bool {
@@ -263,6 +271,9 @@ fn text_runs(prop: Prop) -> bool {
 }
 
 fn candidate(prop: Prop, value: &Value) -> bool {
+   if blur(prop) {
+      return blur_fallback(value).is_some_and(brand_fill);
+   }
    if prop == canvas::DRAW {
       return matches!(value, Value::Arr(_) | Value::Words(_));
    }
@@ -282,6 +293,57 @@ fn candidate(prop: Prop, value: &Value) -> bool {
          }))
 }
 
+fn themed_blur(mirror: &Mirror, id: i32, v: &Value, palette: Palette) -> Option<Value> {
+   let color = blur_fallback(v)?;
+   if !brand_fill(color) || protected(mirror, id) {
+      return None;
+   }
+   // Android uses the blur fallback in preference to the ordinary fill.
+   // Rewrite it in the guest's batch, including pressed-state updates.
+   let target = if matches!(tone(color), Some(Tone::Pale)) {
+      palette.container
+   } else {
+      palette.primary
+   };
+   let mut out = v.clone();
+   set_record_field(&mut out, crate::prop!("fallback"), colored(color, target));
+   Some(out)
+}
+
+fn themed_gradient(mirror: &Mirror, id: i32, v: &Value, palette: Palette) -> Option<Value> {
+   let stops = stop_colors(v)?;
+   if protected(mirror, id) || !stops.iter().any(|s| argb(s).is_some_and(brand_fill)) {
+      return None;
+   }
+   let mut out = v.clone();
+   let colors = match &mut out {
+      Value::Arr(colors) => colors,
+      Value::Obj(fields) => {
+         let (_, Value::Arr(colors)) = fields
+            .iter_mut()
+            .find(|(k, _)| *k == crate::prop!("colors").key())?
+         else {
+            return None;
+         };
+         colors
+      },
+      _ => return None,
+   };
+   for stop in colors {
+      if let Some(c) = argb(stop).filter(|c| brand_fill(*c)) {
+         *stop = colored(
+            c,
+            if matches!(tone(c), Some(Tone::Pale)) {
+               palette.container
+            } else {
+               palette.primary
+            },
+         );
+      }
+   }
+   Some(out)
+}
+
 fn replacement(
    mirror: &Mirror,
    id: i32,
@@ -290,42 +352,14 @@ fn replacement(
    palette: Option<Palette>,
    system_font: bool,
 ) -> Option<Value> {
+   if blur(prop) {
+      return themed_blur(mirror, id, v, palette?);
+   }
    if prop == canvas::DRAW {
       return canvas::repaint(v, mirror, id, palette?);
    }
    if gradient(prop) {
-      let palette = palette?;
-      let stops = stop_colors(v)?;
-      if protected(mirror, id) || !stops.iter().any(|s| argb(s).is_some_and(brand_fill)) {
-         return None;
-      }
-      let mut out = v.clone();
-      let colors = match &mut out {
-         Value::Arr(colors) => colors,
-         Value::Obj(fields) => {
-            let (_, Value::Arr(colors)) = fields
-               .iter_mut()
-               .find(|(k, _)| *k == crate::prop!("colors").key())?
-            else {
-               return None;
-            };
-            colors
-         },
-         _ => return None,
-      };
-      for stop in colors {
-         if let Some(c) = argb(stop).filter(|c| brand_fill(*c)) {
-            *stop = colored(
-               c,
-               if matches!(tone(c), Some(Tone::Pale)) {
-                  palette.container
-               } else {
-                  palette.primary
-               },
-            );
-         }
-      }
-      return Some(out);
+      return themed_gradient(mirror, id, v, palette?);
    }
    if prop == Prop::FONT_FAMILY {
       let link = palette.is_some_and(|p| p.system_links)
@@ -349,7 +383,7 @@ fn replacement(
             crate::prop!("bold"),
          ]
          .iter()
-         .any(|k| run_field(span, *k).is_some());
+         .any(|k| record_field(span, *k).is_some());
          let font = ((system_font && styled)
             || (pal.is_some_and(|p| p.system_links) && link.is_some()))
             && text_run(span);
@@ -359,11 +393,11 @@ fn replacement(
          }
          let out = result.get_or_insert_with(|| spans.clone());
          if let Some((color, palette)) = color {
-            set_run_field(&mut out[i], Prop::COLOR, colored(color, palette.primary));
+            set_record_field(&mut out[i], Prop::COLOR, colored(color, palette.primary));
          }
          // In 357200 the TextView reads fontFamily; each inline run reads font.
          if font {
-            set_run_field(
+            set_record_field(
                &mut out[i],
                crate::prop!("font"),
                Value::Str("sans-serif".into()),
@@ -471,7 +505,7 @@ impl Accents {
                continue;
             }
             if matches!(*prop, Prop::ACCESSIBILITY_ID | Prop::ROLE | Prop::COLOR)
-               || matches!(prop.name(), Some("background" | "bg"))
+               || matches!(prop.name(), Some("background" | "bg" | "blur"))
             {
                roots.push(*id);
             }
@@ -654,6 +688,76 @@ mod tests {
             _ => None,
          }
       })
+   }
+
+   #[test]
+   fn blur_fallback_is_themed_in_each_host_batch_before_a_button_is_tagged() {
+      let (mut m, mut a) = (Mirror::default(), Accents::default());
+      let blur = crate::prop!("blur");
+      let active = crate::prop!("activeBlur");
+      let fallback = crate::prop!("fallback");
+      let radius = crate::prop!("radius");
+      let brand = color(0xFF58_65F2);
+      let regular = Value::Obj(vec![
+         (fallback.key(), brand),
+         (radius.key(), Value::I32(10)),
+      ]);
+      let pressed = Value::Map(vec![("fallback".into(), color(0x8058_65F2))]);
+      a.set("theme", Some(DARK));
+      let ops = send(&mut m, &mut a, vec![
+         create(1, ViewKind::Stack, vec![
+            (blur, regular.clone()),
+            (active, pressed.clone()),
+         ]),
+         create(2, ViewKind::Text, vec![(Prop::COLOR, color(0xFFFF_FFFF))]),
+         Op::Children {
+            id:  1,
+            ids: vec![2],
+         },
+      ]);
+      assert_eq!(
+         get(&ops, 1, blur).and_then(blur_fallback),
+         Some(DARK.primary)
+      );
+      assert_eq!(
+         get(&ops, 1, active).and_then(blur_fallback),
+         Some(0x80EF_B3C5)
+      );
+      assert_eq!(get(&ops, 2, Prop::COLOR), Some(&color(DARK.on_primary)));
+      assert_eq!(
+         get(&ops, 1, blur).and_then(|v| record_field(v, radius)),
+         Some(&Value::I32(10))
+      );
+
+      a.set("theme", Some(PINK));
+      assert_eq!(
+         get(&a.refresh(&m), 1, blur).and_then(blur_fallback),
+         Some(PINK.primary)
+      );
+      let ops = send(&mut m, &mut a, vec![Op::Update {
+         id:    1,
+         props: vec![(active, pressed.clone()), (blur, regular.clone())],
+      }]);
+      assert_eq!(
+         get(&ops, 1, active).and_then(blur_fallback),
+         Some(0x8081_4D5F)
+      );
+      a.set("theme", None);
+      let restored = a.refresh(&m);
+      assert_eq!(get(&restored, 1, blur), Some(&regular));
+      assert_eq!(get(&restored, 1, active), Some(&pressed));
+      a.set("theme", Some(DARK));
+      assert_eq!(
+         get(&a.refresh(&m), 2, Prop::COLOR),
+         Some(&color(DARK.on_primary))
+      );
+      let ops = send(&mut m, &mut a, vec![Op::Update {
+         id:    1,
+         props: vec![(blur, Value::Null), (active, Value::Null)],
+      }]);
+      assert_eq!(get(&ops, 1, blur), Some(&Value::Null));
+      assert_eq!(get(&ops, 2, Prop::COLOR), Some(&color(0xFFFF_FFFF)));
+      assert!(get(&a.refresh(&m), 1, blur).is_none());
    }
 
    #[test]
@@ -876,11 +980,11 @@ mod tests {
       };
       assert_eq!(records[1..], special);
       assert_eq!(
-         run_field(&records[0], crate::prop!("font")),
+         record_field(&records[0], crate::prop!("font")),
          Some(&text("sans-serif"))
       );
       assert_eq!(
-         run_field(&records[0], crate::prop!("bold")),
+         record_field(&records[0], crate::prop!("bold")),
          Some(&Value::Bool(true))
       );
       a.set("font", None);

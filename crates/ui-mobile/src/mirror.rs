@@ -46,7 +46,7 @@ pub struct Surface {
    pub horizontal: bool,
    gradients:      u8,
    radii:          [Option<f64>; 3],
-   fills:          [Option<u32>; 2],
+   fills:          [Option<u32>; 3],
    pub padding:    Option<[f32; 4]>,
    pub margin:     Option<[f32; 4]>,
 }
@@ -111,9 +111,12 @@ impl Surface {
                self.disabled = *value == Value::Bool(true);
             },
             Prop::COLOR => self.link_ink = crate::accent::link_ink(value),
+            key if key == crate::prop!("blur") => {
+               self.fills[0] = crate::accent::blur_fallback(value);
+            },
             BACKGROUND | BG => {
                let color = crate::accent::argb(value);
-               self.fills[usize::from(*key == BG)] = color;
+               self.fills[1 + usize::from(*key == BG)] = color;
                let opaque = color.is_some_and(|color| color >> 24 == 255);
                if *key == BG {
                   self.backplate = opaque;
