@@ -1,6 +1,6 @@
 Sunbird Android 系統外觀測試版
-Android 執行檔原始碼  https://github.com/onichan0923/sunbird/commit/8bc24e4433ff04fadc23543e572bb4066fa8a678
-M3E 主題  https://github.com/onichan0923/misc/blob/a5e6e743adacaf3223375d6e60f761eb6dbcde09/sunbird/m3e-theme.js
+Android 執行檔原始碼  https://github.com/onichan0923/sunbird/commit/95fe3976fee85334cb0e529212df9c3ea51adfaa
+M3E 主題  https://github.com/onichan0923/misc/blob/6fea4c620a6587f4d318430f514bdb9a334f5c03/sunbird/m3e-theme.js
 Sunbird 修補器  https://github.com/sunbird-tools/sunbird
 WebAssembly 修補器和 JS 載入器取自 assets.sunbird.tools，固定於 2026.11.26.2140-47990f4 發佈版本。原項目以 MIT 授權發佈。
 下載來源、驗證雜湊與合併流程參考 https://github.com/sunbird-tools/site/tree/3c7bd1412d6f27a3363614f2407f249b010281e9 ，授權見 UPSTREAM-LICENSE。

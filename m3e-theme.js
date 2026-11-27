@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.9.1
+// @version 0.10.0
 // @author onichan0923
 
 (() => {
@@ -675,6 +675,41 @@
     return true;
   }
 
+  function privacyRows(group) {
+    // The privacy page mixes solitary navigation preferences and grouped
+    // radio options. Their labels and accessory can be wrapped separately.
+    const rows = children(group).filter(n => !divider(n));
+    if (!rows.length || rows.length > 12) return false;
+    const matches = [];
+    const kind = n => n?.kind || original(n)?.kind;
+    for (const row of rows) {
+      let body = row, actionable = false;
+      for (let d = 0; body && d < 5; d++) {
+        actionable ||= !!(pressable(body) || original(body)?.pressable || body.checked != null);
+        if (body.children.length !== 1) break;
+        body = ui.node(body.children[0]);
+      }
+      if (!body || !actionable || !original(body)?.horizontal || body.children.length !== 2) return false;
+      const [label, accessory] = children(body);
+      let text = label;
+      while (text && text.children.length === 1) text = ui.node(text.children[0]);
+      const labels = text?.children.length ? children(text) : [text];
+      if (!labels.length || !labels.every(n => kind(n) === "text") || !accessory ||
+          accessory.children.length > 1 || switchParts(row)) return false;
+      matches.push({row,body,labels});
+    }
+    const ids = new Set(rows.map(r => r.id));
+    styleGroup(group, n => n && ids.has(n.id));
+    for (const {row,body,labels} of matches) {
+      for (let n = body; n && n.id !== row.id; n = parent(n)) {
+        if (original(n)?.opaque || original(n)?.backplate) ui.update(n.id, { background: 0, bg: 0 });
+      }
+      ui.update(row.id, { bg: 0, background: palette.row });
+      labels.forEach((label,i) => ui.update(label.id, {color: i ? palette.muted : palette.ink}));
+    }
+    return true;
+  }
+
   function detailWidgets(list, route) {
     if (!route.startsWith("settings-phoenix")) rememberLayout(/connect|linked/.test(route) ? "connections" :
       /content|social/.test(route) ? "content" : /privacy|data/.test(route) ? "privacy" : "settings", list);
@@ -697,6 +732,7 @@
     for (let budget = 450; work.length && budget > 0; budget--) {
       const [node, depth] = work.pop();
       if (depth > 10 || !node.children.length || node.accessibilityId === searchId) continue;
+      if (/privacy|data/i.test(route) && privacyRows(node)) continue;
       if (radioGroup(node)) continue;
       const toggle = switchParts(node);
       if (toggle && !painted.has(toggle.track.id)) {
@@ -742,7 +778,7 @@
       const body = parent(header);
       if (!shellNode(body) || body.children.length < 2 || body.children.length > 6) continue;
       const siblings = children(body).filter(n => n.id !== header.id);
-      const scroll = siblings.find(n => n.kind === "scroll") ||
+      const scroll = siblings.find(n => (n.kind || original(n)?.kind) === "scroll") ||
         (body.children.length === 4 && body.children[3] === header.id ? ui.node(body.children[2]) : null);
       if (!scroll || scroll.children.length !== 1 || (scroll.kind && scroll.kind !== "scroll")) continue;
       const list = ui.node(scroll.children[0]);
@@ -838,6 +874,17 @@
       const actions = ui.node(node.children[node.children.length - 1]);
       if (actions && children(actions).some(group => children(group).some(action))) {
         ui.update(actions.id, { background: conversation.menu });
+      }
+      // On 357200 the hint follows the quick reactions inside the first section.
+      let top = ui.node(node.children[0]);
+      while (top && top.children.length === 1) top = ui.node(top.children[0]);
+      if (top?.children.length === 2) {
+        const [strip, hint] = children(top);
+        const parts = children(hint), edit = parts.at(-1);
+        if (parts.length === 3 && contains(strip, n => reaction(n.accessibilityId || ""), 3) &&
+            edit && !edit.children.length && (edit.kind || original(edit)?.kind) === "text") {
+          ui.update(edit.id, { color: palette.accent });
+        }
       }
       paintMenuGroups(node);
       rememberLayout("message-menu", node);
@@ -1208,6 +1255,7 @@
 
   function childOf(node, ancestorId) {
     for (let depth = 0; node && depth < 12; depth++, node = parent(node)) {
+      if (!parent(node)?.children.includes(node.id)) return null;
       if (node.parent === ancestorId) return node;
     }
     return null;
@@ -1597,19 +1645,66 @@
     return false;
   }
 
-  function paintBubble(anchor, embeds) {
+  const bubbles = new Map();
+
+  // On 357200 each message line pairs a 40dp avatar or empty spacer
+  // with its content column, including below a reply preview.
+  function messageColumn(marker) {
+    let branch = marker;
+    for (let i = 0; branch && i < 10; i++, branch = parent(branch)) {
+      const up = parent(branch);
+      if (!up || up.id === marker.list) break;
+      if (up.children.length !== 2 || !original(up)?.horizontal) continue;
+      const [gutter, content] = children(up);
+      if (!gutter || !content) continue;
+      const shape = original(gutter);
+      if (!/^message\.avatar:/.test(gutter.accessibilityId || "") &&
+          (gutter.accessibilityId || (gutter.children.length && shape?.height !== 40 && !shape?.pressable))) continue;
+      if (content.id === branch.id) return content;
+      if (gutter.id === branch.id) return null;
+    }
+    return undefined;
+  }
+
+  function releaseBubble(boxId) {
+    bubbles.delete(boxId);
+    const node = ui.node(boxId);
+    if (!node) return;
+    const shape = original(node);
+    ui.update(boxId, { background: shape?.fill || 0, padding: shape?.padding || 0, clip: false,
+      radius: 0, radiusTopLeft: shape?.topLeft || 0, radiusTopRight: shape?.topRight || 0,
+      radiusBottomLeft: 0, radiusBottomRight: 0 });
+  }
+
+  function sweepBubbles(all = false) {
+    for (const [id, marker] of reactionRows) if (all || !ui.node(id) || !ui.node(marker)) reactionRows.delete(id);
+    for (const [box, owner] of bubbles) {
+      const marker = ui.node(owner.marker);
+      const lane = marker && messageColumn(marker);
+      if (all || lane === null || (lane && lane.id !== box && !childOf(ui.node(box), lane.id)) || !marker || marker.accessibilityId !== owner.name || marker.list !== owner.list ||
+          !ui.node(box) || (marker.id !== box && !childOf(marker, box))) releaseBubble(box);
+    }
+  }
+
+  function paintBubble(anchor, embeds, marker = anchor) {
     if (anchor.list == null || anchor.sheet != null) return;
     const id = anchor.accessibilityId.split(":")[1];
     if (!/^\d+$/.test(id)) return;
+    const lane = messageColumn(marker);
+    if (lane === null) return;
     const cardIds = new Set(embeds.map(card => card.id));
     let photo = false;
     let box = anchor;
     // Walk only up this message's column. An avatar, reply preview, another
     // message, a date separator or the list itself marks the outer boundary.
     for (let depth = 0; depth < 5; depth++) {
+      if (box.id === lane?.id) break;
       const up = parent(box);
       if (!shellNode(up) || up.id === anchor.list || up.sheet != null || up.children.length > 8 ||
           (up.accessibilityId && up.accessibilityId !== "message.body:" + id)) break;
+      // A horizontal parent contains the avatar (or its anonymous continuation
+      // spacer) beside the content. Its siblings never belong inside a bubble.
+      if (original(up)?.horizontal && up.children.length > 1) break;
       const others = children(up).filter(n => n.id !== box.id);
       if (!others.length) { if (up.parent === anchor.list) break; box = up; continue; }
       const following = children(up).slice(up.children.indexOf(box.id) + 1);
@@ -1636,9 +1731,17 @@
       if (!lane) return;
       box = lane;
     }
+    // Reject an avatar lane even if it carries a named descendant on a recycled row.
+    for (let n = box, i = 0; n && n.id !== anchor.list && i < 8; n = parent(n), i++) {
+      const host = parent(n);
+      if (!host || host.id === anchor.list) break;
+      if (original(host)?.horizontal && host.children.length >= 2 && host.children[0] === n.id &&
+          (original(n)?.height === 40 || !n.children.length || /avatar|reply-preview/.test(n.accessibilityId || ""))) return;
+    }
     const list = ui.node(anchor.list);
     const row = childOf(box, anchor.list);
     if (!row || !list) return;
+    paintReactions(lane || box, marker);
     const pos = row && list ? list.children.indexOf(row.id) : -1;
     const startsGroup = n => contains(n, c => /^message\.(?:author|avatar|reply):|^reply-preview/.test(c.accessibilityId || ""), 5);
     const messageRow = n => contains(n, c => /^message\.content:\d+$/.test(c.accessibilityId || ""), 5);
@@ -1661,10 +1764,54 @@
       }
     }
     const media = hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
-    ui.update(box.id, { background: conversation.bubble, radius: 16, minWidth: 0, shrink: 1, clip: true,
+    for (const [oldBox, owner] of bubbles) {
+      if (oldBox !== box.id && owner.marker === marker.id) releaseBubble(oldBox);
+    }
+    bubbles.set(box.id, { marker: marker.id, name: marker.accessibilityId, list: anchor.list });
+    ui.update(box.id, { background: conversation.bubble, radius: 16, clip: media,
       radiusTopLeft: joinedAbove ? 4 : 16, radiusTopRight: joinedAbove ? 4 : 16,
       radiusBottomLeft: joinedBelow ? 4 : 16, radiusBottomRight: joinedBelow ? 4 : 16,
       padding: [10, 5, 10, media ? 10 : 5] });
+  }
+
+  const reactionRows = new Map();
+  function paintReactions(column, marker) {
+    if (!column || marker.list == null) return;
+    // Recognize the emoji/count chips as a group in this message's content
+    // column. Emoji glyphs and images keep their original colors.
+    const work = children(column).map(n => [n, 0]);
+    for (let budget = 36; work.length && budget > 0; budget--) {
+      const [row, depth] = work.shift();
+      if (messageMedia(row) || /^(embed|attachment|message\.(?:author|avatar|timestamp|content))[:.]/.test(row.accessibilityId || "")) continue;
+      const shape = original(row), items = children(row);
+      if (shape?.horizontal && items.length && items.length <= 24) {
+        const chips = items.map(button => {
+          if (!original(button)?.pressable && !pressable(button)) return null;
+          let body = button;
+          for (let d = 0; body.children.length === 1 && d < 3; d++) body = ui.node(body.children[0]);
+          const pieces = children(body);
+          if ((body.kind || original(body)?.kind) === "image") return {button, plus: body};
+          if (pieces.length !== 2 || !original(body)?.horizontal) return null;
+          const [glyph, count] = pieces;
+          const glyphKind = glyph.kind || original(glyph)?.kind;
+          if (!["text", "image"].includes(glyphKind) || (count.kind || original(count)?.kind) !== "text") return null;
+          return {button, count};
+        });
+        if (chips.every(Boolean) && chips.some(chip => chip.count) &&
+            chips.every((chip,i) => chip.count || i === chips.length - 1)) {
+          for (const {button, count, plus} of chips) {
+            reactionRows.set(button.id, marker.id);
+            const selected = button.checked === true || original(button)?.brandFill;
+            ui.update(button.id, { background: selected ? palette.pressed : conversation.control,
+              activeBackground: palette.pressed, borderColor: selected ? palette.accent : 0 });
+            if (count) ui.update(count.id, { color: selected ? palette.accent : palette.ink });
+            if (plus) ui.update(plus.id, { tint: palette.muted });
+          }
+          return;
+        }
+      }
+      if (depth < 2 && items.length <= 5) for (const n of items) work.push([n, depth + 1]);
+    }
   }
 
   function photoOnly(author) {
@@ -1674,13 +1821,59 @@
       const up = parent(branch);
       if (!shellNode(up) || up.id === author.list || up.children.length > 7) return;
       const parts = children(up);
+      // Only the author header itself may be horizontal on this path.
+      if (original(up)?.horizontal && parts.length > 1 && branch.id !== author.id) return;
       if (parts.some(n => contains(n, c => (c.accessibilityId || "").startsWith(messageMatch.prefix), 3))) return;
       if (!original(up)?.horizontal && parts.slice(parts.findIndex(n => n.id === branch.id) + 1).some(messageMedia)) {
         // Start at the whole author line so its inline badges are outside the media scan.
-        paintBubble({ ...branch, accessibilityId: author.accessibilityId, list: author.list }, []);
+        paintBubble({ ...branch, accessibilityId: author.accessibilityId, list: author.list }, [], author);
         return;
       }
       branch = up;
+    }
+  }
+
+  function threadNotice(card, namedButton = null) {
+    const parts = children(card);
+    if (parts.length !== 2 || card.sheet != null || card.list != null) return false;
+    let [note, button] = parts;
+    while (note && note.children.length === 1) note = ui.node(note.children[0]);
+    if ((note?.kind || original(note)?.kind) !== "text") return false;
+    if (namedButton && button.id !== namedButton.id && !childOf(namedButton, button.id)) return false;
+    for (let i = 0; button && i < 4; i++) {
+      const shape = original(button);
+      if (shape?.pressable || pressable(button) || button.accessibilityId === "create-thread") break;
+      if (button.children.length !== 1) return false;
+      button = ui.node(button.children[0]);
+    }
+    const label = button && buttonLabel(button);
+    if (!label || (label.kind || original(label)?.kind) !== "text") return false;
+    if (!namedButton && !original(button)?.brandFill) return false;
+    ui.update(card.id, { ...flat, background: palette.row, radius: 18 });
+    ui.update(note.id, {color: palette.ink});
+    ui.update(button.id, {background: palette.accent, activeBackground: palette.accent});
+    ui.update(label.id, {color: palette.onAccent});
+    return true;
+  }
+
+  function namedThreadButton(button) {
+    for (let n = parent(button), d = 0; shellNode(n) && d < 4; n = parent(n), d++) {
+      if (threadNotice(n, button)) return;
+    }
+  }
+
+  function chatFooter(list) {
+    let branch = list;
+    for (let depth = 0; branch && depth < 4; depth++, branch = parent(branch)) {
+      const host = parent(branch);
+      if (!shellNode(host) || host.children.length > 8) break;
+      const work = children(host).slice(host.children.indexOf(branch.id) + 1);
+      for (let i = 0; work.length && i < 18; i++) {
+        const n = work.shift();
+        if (n.sheet != null || n.list != null || n.accessibilityId === "composer" || !shellNode(n)) continue;
+        if (threadNotice(n)) return;
+        if (n.children.length <= 3) work.push(...children(n));
+      }
     }
   }
 
@@ -1759,11 +1952,17 @@
     });
   }
 
+  let bubbleSweepAt = 0;
   function styleChat(node) {
+    if (node.list != null && (lastList !== node.list || Date.now() - bubbleSweepAt >= 120)) {
+      sweepBubbles();
+      bubbleSweepAt = Date.now();
+    }
     if (node.list != null && node.list !== lastList) {
       const list = ui.node(node.list);
       if (list) {
         rememberLayout("chat-viewport", parent(list) || list);
+        chatFooter(list);
         ui.update(list.id, paneSurface());
         let joined = false;
         for (const name of [...headerNames, "search.entry"]) forLive(name, h => { if (joinHeaderAndList(h, list)) joined = true; });
@@ -1786,6 +1985,7 @@
     removeSkins(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
+    ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
     conversation = {
       header: palette.canvas,
       menu: dark ? palette.canvas : mix(palette.row, palette.canvas, 0.38),
@@ -1826,6 +2026,7 @@
     forLive("composer", styleComposer);
     forLive(contextCancel, styleContext);
     forLive(searchId, settingsFromSearch);
+    forLive("create-thread", namedThreadButton);
     forLive(messageMatch, styleChat);
     forLive({ prefix: "message.author:" }, photoOnly);
     for (const name of pickerAnchors) forLive(name, paintPicker);
@@ -1869,7 +2070,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.9.1", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.10.0", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -1957,6 +2158,7 @@
   watch({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
   watch("search.entry", styleHeader);
   watch("composer", styleComposer);
+  watch("create-thread", namedThreadButton);
   for (const name of pickerAnchors) watch(name, paintPicker);
   watch({ prefix: "message.author:" }, photoOnly);
   watch(searchId, settingsFromSearch);
@@ -1999,6 +2201,7 @@
     if (list && (event.node === list.id || event.node === list.parent)) {
       paintSettingsList(list);
     } else if (lastList == null || event.node === lastList) {
+      sweepBubbles();
       forLive(messageMatch, styleChat);
       forLive({ prefix: "message.author:" }, photoOnly);
       if (lastList != null) paintCallRows(ui.node(lastList));
@@ -2037,6 +2240,8 @@
     watchers.push(ui.onChecked(snapshot => {
       const node = ui.node(snapshot.id);
       if (!node || typeof node.checked !== "boolean") return;
+      const reactionAnchor = reactionRows.has(node.id) && ui.node(reactionRows.get(node.id));
+      if (reactionAnchor) paintReactions(messageColumn(reactionAnchor) || parent(reactionAnchor), reactionAnchor);
       const owner = switchOwners.get(node.id);
       if (owner == null) return;
       const row = ui.node(owner);
@@ -2073,6 +2278,7 @@
     clearPickerCorners(true);
     removeSkins(true);
     clearEditing();
+    sweepBubbles(true);
     for (const remove of watchers) remove();
     for (const remove of rules) remove();
   });
