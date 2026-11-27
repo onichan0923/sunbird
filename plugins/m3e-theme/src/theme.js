@@ -1926,11 +1926,41 @@ if (phoenix.appearance) (() => {
       if (!["view", "stack"].includes(kind) || info?.horizontal || (info?.height != null && info.height <= 32)) return false;
       if (part.children.length !== 1) {
         // A video/photo tile can also have an overlay button or spoiler mask.
-        return children(part).some(n => original(n)?.kind === "image" && original(n).height > 40);
+        const parts = children(part);
+        if (parts.some(n => original(n)?.kind === "image" && original(n).height > 40)) return true;
+        // A game result puts its image tile and a separate action in one column.
+        return parts.length === 2 && interactive(parts[1]) &&
+          contains(parts[0], n => kindOf(n) === "image" && original(n)?.height > 40, 4);
       }
       part = ui.node(part.children[0]);
     }
     return false;
+  }
+
+  // The guest measures attachments before the theme adds horizontal padding.
+  // Follow only the image path. Captions, actions and small overlay icons keep
+  // their own layout. A fixed-width stack also needs to fit its parent on Android.
+  function fitMediaBranch(node, depth = 0, sizedTile = false) {
+    if (!node || depth > 7) return false;
+    const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
+    if (/avatar|thumb|emoji|badge|icon|reaction|reply|author|timestamp/i.test(name)) return false;
+    if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return false;
+    const tall = shape?.height > 40;
+    if (kind === "image") {
+      if (!tall && !(sizedTile && shape?.height == null)) return false;
+      // With a known tile height Android can keep the intrinsic aspect ratio.
+      // An image that takes its height from its stack must fill the stack.
+      ui.update(node.id, { width: shape?.height > 0 ? "wrap" : "fill", maxWidth: "100%", scale: "fit" });
+      return true;
+    }
+    if (!shellNode(node) || (shape?.horizontal && node.children.length > 1) ||
+        (shape?.height != null && shape.height <= 40)) return false;
+    let fitted = false;
+    for (const part of children(node)) {
+      if (fitMediaBranch(part, depth + 1, sizedTile || tall || /^(?:attachment|media|image)/i.test(name))) fitted = true;
+    }
+    if (fitted) ui.update(node.id, kind === "stack" ? { width: "fill" } : { maxWidth: "100%", minWidth: 0 });
+    return fitted;
   }
 
   const bubbles = new Map();
@@ -2051,7 +2081,14 @@ if (phoenix.appearance) (() => {
         ui.update(n.id, { width: "fill", minWidth: 0, shrink: 1 });
       }
     }
-    const media = hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
+    const body = box.id === anchor.id ? null : childOf(anchor, box.id);
+    const parts = children(box);
+    let fitted = false;
+    for (const part of parts.slice(body ? box.children.indexOf(body.id) : 0)) {
+      if (part.id === body?.id && marker.id !== anchor.id) continue;
+      if (fitMediaBranch(part)) fitted = true;
+    }
+    const media = fitted || hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
     for (const [oldBox, owner] of bubbles) {
       if (oldBox !== box.id && owner.marker === marker.id) releaseBubble(oldBox);
     }
@@ -2572,7 +2609,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.7", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.8", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
