@@ -26,6 +26,7 @@ pub struct Mirror {
    kids:         HashMap<i32, Vec<i32>>,
    parent:       HashMap<i32, i32>,
    ids:          HashMap<i32, String>,
+   checked:      HashMap<i32, bool>,
    /// Debug-only node kind & prop snapshots, populated only when `capture` is
    /// enabled (e.g. when the remote debug shell is active or in unit tests).
    kinds:        HashMap<i32, ViewKind>,
@@ -92,6 +93,8 @@ impl Mirror {
          self.kinds.insert(id, kind.clone());
          self.props.insert(id, props.clone());
       }
+      self.checked.remove(&id);
+      self.record_checked(id, props);
       let is_list = get_prop(props, FIRST).is_some();
       if let Some(Value::I32(first)) = get_prop(props, FIRST) {
          self.firsts.insert(id, *first);
@@ -119,6 +122,7 @@ impl Mirror {
    }
 
    fn update(&mut self, id: i32, props: &Props, capture: bool) {
+      self.record_checked(id, props);
       if capture {
          let stored = self.props.entry(id).or_default();
          for (key, value) in props {
@@ -145,6 +149,23 @@ impl Mirror {
       }
    }
 
+   fn record_checked(&mut self, id: i32, props: &Props) {
+      match get_prop(props, Prop::ACCESSIBILITY_CHECKED) {
+         Some(Value::Bool(value)) => {
+            self.checked.insert(id, *value);
+         },
+         Some(_) => {
+            self.checked.remove(&id);
+         },
+         None => {},
+      }
+   }
+
+   #[must_use]
+   pub fn checked(&self, id: i32) -> Option<bool> {
+      self.checked.get(&id).copied()
+   }
+
    /// Records `aid` as the accessibility id of `id`.
    fn name(&mut self, id: i32, aid: &str) {
       if aid == "composer" && !self.composer.iter().any(|(input, _)| *input == id) {
@@ -160,6 +181,7 @@ impl Mirror {
       self.kids.remove(&id);
       self.parent.remove(&id);
       self.ids.remove(&id);
+      self.checked.remove(&id);
       self.kinds.remove(&id);
       self.props.remove(&id);
       self.sheets.remove(&id);
@@ -395,6 +417,54 @@ mod tests {
       inspect::TreeJson,
       prop,
    };
+
+   #[test]
+   fn tracks_checked_without_debug_capture_or_stale_recycled_ids() {
+      let mut mirror = Mirror::default();
+      let create = |props| {
+         Op::Create {
+            id: 8,
+            kind: ViewKind::View,
+            props,
+         }
+      };
+      let checked = |v| vec![(Prop::ACCESSIBILITY_CHECKED, v)];
+      mirror.apply(&[create(checked(Value::Bool(false)))], false);
+      assert_eq!(mirror.checked(8), Some(false));
+      mirror.apply(
+         &[Op::Update {
+            id:    8,
+            props: checked(Value::Bool(true)),
+         }],
+         false,
+      );
+      assert_eq!(mirror.checked(8), Some(true));
+      mirror.apply(
+         &[Op::Update {
+            id:    8,
+            props: vec![],
+         }],
+         false,
+      );
+      assert_eq!(mirror.checked(8), Some(true));
+      mirror.apply(
+         &[Op::Update {
+            id:    8,
+            props: checked(Value::Null),
+         }],
+         false,
+      );
+      assert_eq!(mirror.checked(8), None);
+      mirror.apply(&[create(checked(Value::Bool(true))), create(vec![])], false);
+      assert_eq!(mirror.checked(8), None);
+      mirror.apply(
+         &[create(checked(Value::Bool(false))), Op::Delete {
+            ids: vec![8],
+         }],
+         false,
+      );
+      assert_eq!(mirror.checked(8), None);
+   }
 
    #[test]
    fn tracks_root_children_edits_and_deletes() {

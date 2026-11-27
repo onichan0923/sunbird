@@ -4,7 +4,9 @@ use std::{
    ffi::CString,
    ptr,
    sync::{
+      Mutex,
       OnceLock,
+      PoisonError,
       atomic::{
          AtomicBool,
          AtomicU64,
@@ -21,6 +23,11 @@ use jni_sys::{
    JNIEnv,
    jvalue,
 };
+use phoenix_wire::{
+   HostCall,
+   Key,
+   Value as WireValue,
+};
 use rquickjs::{
    CatchResultExt,
    Ctx,
@@ -33,6 +40,8 @@ use crate::{
    host::{
       self,
       Event,
+      Field,
+      Method,
    },
    js::{
       Mobile,
@@ -181,6 +190,51 @@ pub struct Listener<'js> {
    last:     Option<Appearance>,
 }
 
+// Discord can publish a fresh host theme when switching panels. Keep only the
+// requested semantic roles in that update; other colors belong to the client.
+static CHROME: Mutex<Vec<(String, [u32; 3])>> = Mutex::new(Vec::new());
+
+fn set_chrome(owner: &str, colors: Option<[u32; 3]>) {
+   let mut entries = CHROME.lock().unwrap_or_else(PoisonError::into_inner);
+   entries.retain(|(plugin, _)| plugin != owner);
+   if let Some(colors) = colors {
+      entries.push((owner.to_owned(), colors));
+   }
+}
+
+pub fn theme_roles(head: &[u8]) -> Option<[(Key, u32); 3]> {
+   let table = host::table()?;
+   if HostCall::target(head)? != table.call(Method::AppStateSetTheme)? {
+      return None;
+   }
+   let colors = CHROME
+      .lock()
+      .unwrap_or_else(PoisonError::into_inner)
+      .last()?
+      .1;
+   Some([
+      (table.key(Field::Brand)?, colors[0]),
+      (table.key(Field::BrandText)?, colors[1]),
+      (table.key(Field::Background)?, colors[2]),
+   ])
+}
+
+pub fn apply_theme_roles(frame: &[u8], roles: [(Key, u32); 3]) -> Option<Vec<u8>> {
+   let mut call = HostCall::decode(frame).ok()?;
+   let WireValue::Obj(fields) = &mut call.args else {
+      return None;
+   };
+   for (key, color) in roles {
+      let color = WireValue::I64(i64::from(color));
+      if let Some((_, old)) = fields.iter_mut().find(|(k, _)| *k == key) {
+         *old = color;
+      } else {
+         fields.push((key, color));
+      }
+   }
+   Some(call.encode())
+}
+
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static WORK: OnceLock<SyncSender<()>> = OnceLock::new();
 
@@ -275,6 +329,18 @@ pub fn object<'js>(ctx: &Ctx<'js>, plugin: &str) -> rquickjs::Result<Object<'js>
          js_value(&ctx, snapshot().as_ref())
       })?,
    )?;
+   let theme_owner = plugin.to_owned();
+   obj.set(
+      "setChromeColors",
+      Function::new(
+         ctx.clone(),
+         move |ctx: Ctx<'js>, brand: u32, on_brand: u32, canvas: u32| {
+            set_chrome(&theme_owner, Some([brand, on_brand, canvas]));
+            let owner = theme_owner.clone();
+            remover(&ctx, move |_| set_chrome(&owner, None), None)
+         },
+      )?,
+   )?;
    let owner = plugin.to_owned();
    obj.set(
       "onChange",
@@ -324,6 +390,39 @@ fn retain(ctx: &Ctx<'_>, keep: impl FnMut(&Listener<'_>) -> bool) {
    }
 }
 
+#[cfg(test)]
+mod theme_tests {
+   use super::*;
+
+   #[test]
+   fn theme_update_changes_brand_and_canvas_and_preserves_other_roles() {
+      let keys = [596, 597, 587].map(Key::new);
+      let danger = (Key::new(590), WireValue::I64(0xFFED4245));
+      let call = HostCall {
+         module: 9,
+         method: 84,
+         args:   WireValue::Obj(vec![(keys[0], WireValue::I64(0xFF5865F2)), danger.clone()]),
+         body:   vec![9],
+      };
+      let roles = [
+         (keys[0], 0xFFEFB3C5),
+         (keys[1], 0xFF4B2733),
+         (keys[2], 0xFF22171A),
+      ];
+      let bytes = apply_theme_roles(&call.encode(), roles).unwrap();
+      let result = HostCall::decode(&bytes).unwrap();
+      assert_eq!(result.body, call.body);
+      assert_eq!(result.args.field(danger.0), Some(&danger.1));
+      for (key, color) in roles {
+         assert_eq!(
+            result.args.field(key),
+            Some(&WireValue::I64(i64::from(color)))
+         );
+      }
+   }
+}
+
 pub fn unload(ctx: &Ctx<'_>, plugin: &str) {
+   set_chrome(plugin, None);
    retain(ctx, |listener| listener.owner != plugin);
 }

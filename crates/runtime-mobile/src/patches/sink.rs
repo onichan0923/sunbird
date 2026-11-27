@@ -241,6 +241,7 @@ impl Patches {
          let skip_action_placement =
             self.match_prop_patches(&named, &created, &mut patch_ops, &mut list_updates);
          self.notify_watchers(&named);
+         self.notify_checked(&ops);
          self.learn(&named, &ops, &created);
          self.anchor(
             named,

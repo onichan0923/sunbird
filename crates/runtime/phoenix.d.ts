@@ -987,6 +987,8 @@ declare namespace Phoenix {
     /** Android system resources. Each call returns a fresh snapshot. */
     readonly appearance?: {
       get(): SystemAppearance | null;
+      /** Overrides Android host brand, brandText and window content background on subsequent theme writes. Removed on unload. */
+      setChromeColors?(brand: number, onBrand: number, background: number): () => void;
       /** Rechecks system colors on appearance and app lifecycle events. Returns an unsubscribe function. */
       onChange(listener: (state: SystemAppearance) => void): () => void;
     };
@@ -1169,6 +1171,8 @@ declare namespace Phoenix {
   type NodeMatch = string | { exact: string } | { prefix: string };
 
   interface NodeInfo {
+    /// Original accessibilityChecked when the host supplies a Boolean.
+    readonly checked: boolean | null;
     readonly id: number;
     /// Phoenix `ViewKind` when Remote Debug Shell is enabled, else `null`.
     readonly kind: string | null;
@@ -1438,6 +1442,8 @@ declare namespace Phoenix {
     dispatch(node: number, event: string, payload?: Record<string, unknown>): boolean;
     /// Runs when a Phoenix node whose `accessibilityId` matches `match` is created.
     onNode(match: NodeMatch, handler: (node: NodeInfo) => void): Remover;
+    /// Observes original accessibilityChecked writes, including creation and removal.
+    onChecked(handler: (node: NodeInfo) => void): Remover;
     /// Declaratively patches props synchronously inside Rust's UI batch rewriter (zero JS
     /// overhead per frame). Use `addOn` to append event names to `on` without clobbering Phoenix's
     /// existing listeners.

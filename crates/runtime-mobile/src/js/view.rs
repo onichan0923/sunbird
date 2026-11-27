@@ -182,6 +182,13 @@ pub fn add_view_hooks<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rq
    )?;
    let owner = plugin.to_owned();
    ui.set(
+      "onChecked",
+      Function::new(ctx.clone(), move |ctx: Ctx<'js>, handler: Function<'js>| {
+         on_node_created(&ctx, &owner, NodeMatch::Checked, handler)
+      })?,
+   )?;
+   let owner = plugin.to_owned();
+   ui.set(
       "onNode",
       Function::new(
          ctx.clone(),
@@ -398,6 +405,13 @@ pub fn node_info_object<'js>(ctx: &Ctx<'js>, info: &NodeInfo) -> rquickjs::Resul
    let obj = Object::new(ctx.clone())?;
    obj.set("id", info.id)?;
    obj.set("kind", info.kind.clone())?;
+   obj.set(
+      "checked",
+      info.checked.map_or_else(
+         || Value::new_null(ctx.clone()),
+         |checked| Value::new_bool(ctx.clone(), checked),
+      ),
+   )?;
    obj.set("accessibilityId", info.accessibility_id.clone())?;
    obj.set("parent", info.parent)?;
    obj.set("children", info.children.clone())?;

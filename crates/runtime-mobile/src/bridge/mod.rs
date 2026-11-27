@@ -105,6 +105,11 @@ fn host_call(head: &[u8], frame: impl FnOnce() -> Vec<u8>) -> Action {
    {
       phoenix_runtime::remote::record(&crate::debug::Trace::HostCall { module, method });
    }
+   #[cfg(target_os = "android")]
+   if let Some(roles) = crate::appearance::theme_roles(head) {
+      return crate::appearance::apply_theme_roles(&frame(), roles)
+         .map_or(Action::Pass, Action::Replace);
+   }
    if discord::wants(head) {
       discord::intercept_call(&frame())
    } else {
