@@ -306,6 +306,26 @@ pub fn add_view_queries<'js>(ctx: &Ctx<'js>, ui: &Object<'js>) -> rquickjs::Resu
          },
       )?,
    )?;
+   ui.set(
+      "surface",
+      Function::new(
+         ctx.clone(),
+         |ctx: Ctx<'js>, id: i32| -> rquickjs::Result<Value<'js>> {
+            let Some(surface) = patches::nodes::surface(id) else {
+               return Ok(Value::new_null(ctx));
+            };
+            let obj = Object::new(ctx)?;
+            obj.set("kind", surface.kind)?;
+            obj.set("height", surface.height)?;
+            obj.set("opaque", surface.opaque)?;
+            obj.set("backplate", surface.backplate)?;
+            obj.set("pressable", surface.pressable)?;
+            obj.set("horizontal", surface.horizontal)?;
+            obj.set("gradient", surface.gradient())?;
+            Ok(obj.into_value())
+         },
+      )?,
+   )?;
    ui.set("root", Function::new(ctx.clone(), patches::root_id)?)?;
    Ok(())
 }

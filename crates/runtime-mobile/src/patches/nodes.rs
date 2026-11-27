@@ -91,6 +91,10 @@ pub fn node_info(id: i32) -> Option<NodeInfo> {
    state.mirror.exists(id).then(|| state.build_node_info(id))
 }
 
+pub fn surface(id: i32) -> Option<phoenix_ui_mobile::mirror::Surface> {
+   patches().mirror.surface(id).cloned()
+}
+
 impl Patches {
    pub fn notify_checked(&self, ops: &[Op]) {
       if !self
@@ -212,7 +216,19 @@ mod tests {
             state.notify_checked(&ops);
          };
          for checked in [true, false] {
-            let props = vec![(Prop::ACCESSIBILITY_CHECKED, Value::Bool(checked))];
+            let props = vec![
+               (Prop::ACCESSIBILITY_CHECKED, Value::Bool(checked)),
+               (Prop::HEIGHT, Value::I32(21)),
+               (phoenix_ui_mobile::prop!("background"), Value::I32(-1)),
+               (
+                  phoenix_ui_mobile::prop!("gradient"),
+                  if checked {
+                     Value::Arr(vec![Value::I32(-1)])
+                  } else {
+                     Value::Null
+                  },
+               ),
+            ];
             write(if checked {
                Op::Create {
                   id,
@@ -240,6 +256,13 @@ mod tests {
                   .unwrap()
             );
             assert_eq!(ctx.eval::<bool, _>("last").unwrap(), checked);
+            assert!(
+               ctx.eval::<bool, _>(
+                  "(() => {const s=ui.surface(801);return s.kind==='view' && s.height===21 && \
+                   s.opaque && s.gradient===last})()"
+               )
+               .unwrap()
+            );
          }
          ctx.eval::<(), _>("stop()").unwrap();
          write(Op::Update {

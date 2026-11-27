@@ -1460,6 +1460,16 @@ declare namespace Phoenix {
     findDown(root: number, match: NodeMatch, maxDepth?: number): number | null;
     /// Reads live tree metadata for `id` from Phoenix's mirrored view tree.
     node(id: number): NodeInfo | null;
+    /// Original host surface facts, available without debug capture.
+    surface(id: number): Readonly<{
+      kind: "view" | "stack" | "list" | "scroll" | "image" | "text" | "other";
+      height: number | null;
+      opaque: boolean;
+      backplate: boolean;
+      pressable: boolean;
+      horizontal: boolean;
+      gradient: boolean;
+    }> | null;
     /// The live root Phoenix node id (`Op::Root`), or `null` if not yet seen.
     root(): number | null;
     /// Mounts a raw Phoenix UI subtree onto `parentId` (or `"root"` for the root view). Returns a

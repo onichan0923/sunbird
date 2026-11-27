@@ -16,6 +16,88 @@ use crate::{
    set_prop,
 };
 
+const BG: Prop = Prop::named("bg");
+const BACKGROUND: Prop = Prop::named("background");
+const GRADIENTS: [Prop; 5] = [
+   Prop::named("backgroundGradient"),
+   Prop::named("gradient"),
+   Prop::named("maskGradient"),
+   Prop::named("gradientMask"),
+   Prop::named("activeBackgroundGradient"),
+];
+
+/// Original host paint and layout facts, independent of debug capture and
+/// plugin styling.
+#[expect(
+   clippy::struct_excessive_bools,
+   reason = "host paint, layout and event flags vary independently"
+)]
+#[derive(Clone, Debug, Default)]
+pub struct Surface {
+   pub kind:       &'static str,
+   pub height:     Option<f64>,
+   pub opaque:     bool,
+   pub backplate:  bool,
+   pub pressable:  bool,
+   pub horizontal: bool,
+   gradients:      u8,
+}
+
+impl Surface {
+   fn update(&mut self, props: &Props) {
+      for (key, value) in props {
+         match *key {
+            BACKGROUND | BG => {
+               let opaque = match value {
+                  Value::I32(n) => n.to_be_bytes()[0] == 255,
+                  Value::I64(n) => n.to_be_bytes()[4] == 255,
+                  _ => false,
+               };
+               if *key == BG {
+                  self.backplate = opaque;
+               } else {
+                  self.opaque = opaque;
+               }
+            },
+            Prop::HEIGHT => {
+               self.height = match value {
+                  Value::I32(n) => Some(f64::from(*n)),
+                  Value::F64(n) if n.is_finite() => Some(*n),
+                  _ => None,
+               }
+            },
+            Prop::ON => {
+               self.pressable =
+                  matches!(value, Value::Arr(on) if on.iter().any(|v| v.as_str() == Some("press")));
+            },
+            key if key == crate::prop!("direction") => {
+               self.horizontal = value.as_str() == Some("row");
+            },
+            key => {
+               if let Some(index) = GRADIENTS.iter().position(|gradient| *gradient == key) {
+                  let present = match value {
+                     Value::Null | Value::Bool(false) => false,
+                     Value::Arr(items) => !items.is_empty(),
+                     Value::Words(items) => !items.is_empty(),
+                     _ => true,
+                  };
+                  if present {
+                     self.gradients |= 1 << index;
+                  } else {
+                     self.gradients &= !(1 << index);
+                  }
+               }
+            },
+         }
+      }
+   }
+
+   #[must_use]
+   pub const fn gradient(&self) -> bool {
+      self.gradients != 0
+   }
+}
+
 const FIRST: Prop = Prop::named("first");
 
 /// Rust's view tree as its batches describe it: who holds whom, and the
@@ -27,6 +109,7 @@ pub struct Mirror {
    parent:       HashMap<i32, i32>,
    ids:          HashMap<i32, String>,
    checked:      HashMap<i32, bool>,
+   surfaces:     HashMap<i32, Surface>,
    /// Debug-only node kind & prop snapshots, populated only when `capture` is
    /// enabled (e.g. when the remote debug shell is active or in unit tests).
    kinds:        HashMap<i32, ViewKind>,
@@ -89,6 +172,20 @@ impl Mirror {
    }
 
    fn create(&mut self, id: i32, kind: &ViewKind, props: &Props, capture: bool) {
+      let mut surface = Surface {
+         kind: match kind {
+            ViewKind::View => "view",
+            ViewKind::Stack => "stack",
+            ViewKind::Scroll => "scroll",
+            ViewKind::List => "list",
+            ViewKind::Image => "image",
+            ViewKind::Text => "text",
+            _ => "other",
+         },
+         ..Surface::default()
+      };
+      surface.update(props);
+      self.surfaces.insert(id, surface);
       if capture {
          self.kinds.insert(id, kind.clone());
          self.props.insert(id, props.clone());
@@ -123,6 +220,9 @@ impl Mirror {
 
    fn update(&mut self, id: i32, props: &Props, capture: bool) {
       self.record_checked(id, props);
+      if let Some(surface) = self.surfaces.get_mut(&id) {
+         surface.update(props);
+      }
       if capture {
          let stored = self.props.entry(id).or_default();
          for (key, value) in props {
@@ -147,6 +247,11 @@ impl Mirror {
       if let Some(Value::Str(text)) = get_prop(props, Prop::VALUE) {
          self.set_composer_text(id, text.clone());
       }
+   }
+
+   #[must_use]
+   pub fn surface(&self, id: i32) -> Option<&Surface> {
+      self.surfaces.get(&id)
    }
 
    fn record_checked(&mut self, id: i32, props: &Props) {
@@ -182,6 +287,7 @@ impl Mirror {
       self.parent.remove(&id);
       self.ids.remove(&id);
       self.checked.remove(&id);
+      self.surfaces.remove(&id);
       self.kinds.remove(&id);
       self.props.remove(&id);
       self.sheets.remove(&id);
@@ -417,6 +523,45 @@ mod tests {
       inspect::TreeJson,
       prop,
    };
+
+   #[test]
+   fn surface_tracks_partial_host_updates_and_recycled_nodes() {
+      let mut mirror = Mirror::default();
+      let make = |props| {
+         Op::Create {
+            id: 27,
+            kind: ViewKind::View,
+            props,
+         }
+      };
+      let gradient = Value::Arr(vec![Value::I32(-1)]);
+      mirror.apply(
+         &[make(vec![
+            (BACKGROUND, Value::I32(-1)),
+            (Prop::HEIGHT, Value::F64(0.5)),
+            (GRADIENTS[0], gradient.clone()),
+            (GRADIENTS[2], gradient),
+         ])],
+         false,
+      );
+      mirror.apply(
+         &[Op::Update {
+            id:    27,
+            props: vec![(GRADIENTS[0], Value::Null)],
+         }],
+         false,
+      );
+      let surface = mirror.surface(27).unwrap();
+      assert!(surface.gradient() && surface.opaque);
+      assert_eq!(surface.height, Some(0.5));
+      assert!(mirror.props(27).is_none());
+      mirror.apply(&[make(vec![(BG, Value::I64(0xFFFF_FFFF))])], false);
+      let surface = mirror.surface(27).unwrap();
+      assert!(surface.backplate && !surface.gradient() && !surface.opaque);
+      assert_eq!(surface.height, None);
+      mirror.apply(&[Op::Delete { ids: vec![27] }], false);
+      assert!(mirror.surface(27).is_none());
+   }
 
    #[test]
    fn tracks_checked_without_debug_capture_or_stale_recycled_ids() {
