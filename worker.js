@@ -68,7 +68,7 @@ onmessage=async({data:r})=>{
     build.addLibrary('libplm.so',await unpack(specs[r.abi]));
     build.addLibrary('libshadowhook_nothing.so',new Uint8Array(await (await get('./vendor/shadow-'+r.abi+'.so')).arrayBuffer()));
     if(r.theme || r.recover){
-      const source=await (await get('./m3e-theme.js?v=0.11.14')).text();
+      const source=await (await get('./m3e-theme.js?v=0.11.15')).text();
       // The runtime reads this line from the APK before looking up installed
       // JS. The token belongs to this APK so reopening it respects later choices.
       const pause=r.recover?'// @pause-once '+crypto.randomUUID().replaceAll('-','')+'\n':'';
