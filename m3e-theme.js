@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.9
+// @version 0.11.10
 // @author onichan0923
 // @enabled false
 // @bridge
@@ -1933,30 +1933,43 @@
       }
       return false;
     }
-    function fitMediaBranch(node, depth = 0, sizedTile = false, inEmbed = false) {
-      if (!node || depth > 7) return false;
+    function fitMediaBranch(node, depth = 0, context = {}) {
+      if (!node || depth > 7) return null;
       const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
-      if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) || !inEmbed && /thumb/i.test(name)) return false;
-      if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return false;
-      const tall = shape?.height > 40;
+      if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) || !context.inEmbed && /thumb/i.test(name)) return null;
+      if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return null;
+      if (shape?.height != null && shape.height <= 40) return null;
+      const height = shape?.height ?? context.height;
+      const attachment = context.attachment || /^(?:message\.attachments?[:.]|attachment|media|image)|^embed:.*:image$/i.test(name);
       if (kind === "image") {
-        if (!tall && !(sizedTile && shape?.height == null)) return false;
-        ui.update(node.id, { width: shape?.height > 0 ? "wrap" : "fill", maxWidth: "100%", scale: "fit" });
-        return true;
+        if (height == null && !attachment) return null;
+        const size = { width: "wrap", height: "wrap", maxWidth: null, maxHeight: height ?? null, scale: "fit" };
+        if (context.inStack) size.gravity = "center";
+        ui.update(node.id, size);
+        return "tile";
       }
-      if (!shellNode(node) || shape?.height != null && shape.height <= 40) return false;
+      if (!shellNode(node)) return null;
       if (shape?.horizontal && node.children.length > 1) {
-        const body = inEmbed && stripedBody(node);
-        if (!body || !fitMediaBranch(body, depth + 1, false, true)) return false;
+        const body = context.inEmbed && stripedBody(node);
+        if (!body || !fitMediaBranch(body, depth + 1, { inEmbed: true })) return null;
         ui.update(body.id, { width: 0, flex: 1, minWidth: 0 });
-        return true;
+        return "content";
       }
-      let fitted = false;
-      for (const part of children(node)) {
-        if (fitMediaBranch(part, depth + 1, sizedTile || tall || /^(?:attachment|media|image)/i.test(name), inEmbed)) fitted = true;
+      const parts = children(node);
+      const childContext = { height, attachment, inEmbed: context.inEmbed, inStack: kind === "stack" };
+      let fitted = false, tile = false;
+      for (const part of parts) {
+        const result = fitMediaBranch(part, depth + 1, childContext);
+        if (result) fitted = true;
+        if (result === "tile") tile = true;
       }
-      if (fitted) ui.update(node.id, kind === "stack" ? { width: "fill" } : { maxWidth: "100%", minWidth: 0 });
-      return fitted;
+      if (!fitted) return null;
+      if (tile && (parts.length === 1 || kind === "stack")) {
+        ui.update(node.id, { width: "wrap", height: "wrap", maxWidth: null, minWidth: 0 });
+        return "tile";
+      }
+      ui.update(node.id, { maxWidth: "100%", minWidth: 0 });
+      return "content";
     }
     const bubbles = /* @__PURE__ */ new Map();
     const rowBoxes = /* @__PURE__ */ new Map();
@@ -2132,12 +2145,13 @@
       for (const card of embeds) {
         if (card.id === box.id || !childOf(card, box.id)) continue;
         hasCard = true;
-        fitMediaBranch(card, 0, false, true);
-        ui.update(card.id, { width: "fill", minWidth: 0, shrink: 1 });
+        const compact = fitMediaBranch(card, 0, { inEmbed: true }) === "tile";
+        const sizing = { width: compact ? "wrap" : "fill", minWidth: 0, shrink: 1 };
+        ui.update(card.id, sizing);
         for (let n = parent(card), i = 0; n && n.id !== box.id && i < 8; n = parent(n), i++) {
           const info = original(n);
           if (info?.horizontal || !shellNode(n) || n.children.length !== 1) break;
-          ui.update(n.id, { width: "fill", minWidth: 0, shrink: 1 });
+          ui.update(n.id, sizing);
         }
       }
       const body = box.id === anchor.id ? null : childOf(anchor, box.id);
@@ -2672,7 +2686,7 @@
       copyLayout: {
         type: "button",
         title: "\u8907\u88FD\u4ECB\u9762\u7D50\u69CB",
-        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.9", layouts: Object.fromEntries(layouts) }))
+        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.10", layouts: Object.fromEntries(layouts) }))
       }
     });
     recordLayouts = settings.inspect === true;
