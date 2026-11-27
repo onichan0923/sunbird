@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.7.0
+// @version 0.7.1
 // @author onichan0923
 
 (() => {
@@ -903,7 +903,7 @@
       if (parts.length >= 2 && (named || namedEnd(end) || pressable(end)) &&
           parts.slice(0, -1).some(hasIdentity)) {
         clearDockBacking(n);
-        ui.update(n.id, { ...plainSurface, background: palette.row });
+        ui.update(n.id, { ...plainSurface, background: conversation.userBar });
         if (shellNode(end)) ui.update(end.id, { background: palette.sheet });
         return true;
       }
@@ -936,7 +936,7 @@
     const last = parts[parts.length - 1];
     for (const n of parts) {
       const trailing = n === last && parts.length === 2 && parts[0].children.length >= 2 &&
-        !n.accessibilityId && !n.children.length && !pressable(n) &&
+        !n.accessibilityId && divider(n) && !pressable(n) &&
         (n.kind === "view" || (!n.kind && contains(parts[0], c => c.accessibilityId === "guild.menu" ||
           c.accessibilityId === "search.entry", 4)));
       if (dividerName.test(n.accessibilityId || "") || trailing) ui.update(n.id, { ...flat, opacity: 0, height: 0, minHeight: 0 });
@@ -1303,6 +1303,7 @@
     palette = next;
     conversation = {
       header: palette.canvas,
+      userBar: dark ? palette.row : palette.canvas,
       body: dark ? mix(palette.canvas, palette.row, 0.48) : palette.row,
       bubble: dark ? mix(palette.row, palette.accent, 0.055) : mix(palette.canvas, palette.accent, 0.045),
     };
@@ -1369,7 +1370,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.7.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.7.1", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
