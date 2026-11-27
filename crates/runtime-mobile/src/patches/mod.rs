@@ -689,6 +689,13 @@ impl Patches {
    }
 }
 
+pub fn enable_system_font(owner: &str) {
+   ACTIVE.store(true, Ordering::Release);
+   if patches().accents.enable_system_font(owner) {
+      queue(Job::RefreshAccents);
+   }
+}
+
 pub fn system_font_root(owner: &str, id: i32) {
    let mut state = patches();
    let changed = state.mirror.surface(id).is_some() && state.accents.font_root(owner, id);

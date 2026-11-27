@@ -112,15 +112,7 @@ impl Surface {
             },
             Prop::COLOR => self.link_ink = crate::accent::link_ink(value),
             BACKGROUND | BG => {
-               let color = match value {
-                  Value::I32(n) => Some(n.cast_unsigned()),
-                  Value::I64(n) => {
-                     u32::try_from(*n)
-                        .ok()
-                        .or_else(|| i32::try_from(*n).ok().map(i32::cast_unsigned))
-                  },
-                  _ => None,
-               };
+               let color = crate::accent::argb(value);
                self.fills[usize::from(*key == BG)] = color;
                let opaque = color.is_some_and(|color| color >> 24 == 255);
                if *key == BG {

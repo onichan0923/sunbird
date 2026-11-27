@@ -146,6 +146,11 @@ pub fn node_created(engine: &Engine, watcher_ids: &[u64], info: &NodeInfo) {
 fn add_palette_hook<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickjs::Result<()> {
    let owner = plugin.to_owned();
    ui.set(
+      "useSystemFont",
+      Function::new(ctx.clone(), move || patches::enable_system_font(&owner))?,
+   )?;
+   let owner = plugin.to_owned();
+   ui.set(
       "useSystemFontIn",
       Function::new(ctx.clone(), move |id: i32| {
          patches::system_font_root(&owner, id);

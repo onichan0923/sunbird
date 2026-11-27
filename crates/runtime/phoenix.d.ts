@@ -1466,6 +1466,9 @@ declare namespace Phoenix {
     node(id: number): NodeInfo | null;
     /// Remaps resolved Discord UI brand and link colors. Colors are ARGB. Removed on plugin unload.
     setAccentPalette?(primary: number, onPrimary: number, container: number, systemLinkFont?: boolean): void;
+    /// Use Android's system sans-serif for text, input and rich runs until plugin unload.
+    /// Works independently of the color palette.
+    useSystemFont?(): void;
     /// Use the platform sans-serif for text and rich runs under this mounted node.
     useSystemFontIn?(id: number): void;
     /// Original host surface facts, available without debug capture.

@@ -184,13 +184,6 @@ impl Animated {
    }
 }
 fn paint(m: &Mirror, id: i32, prop: Prop, source: u32, p: Palette) -> Option<u32> {
-   let mapped = replacement(
-      m,
-      id,
-      prop,
-      &Value::I64(i64::from(source)),
-      p,
-      &HashMap::new(),
-   )?;
+   let mapped = replacement(m, id, prop, &Value::I64(i64::from(source)), Some(p), false)?;
    super::argb(&mapped)
 }

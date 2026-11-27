@@ -32,13 +32,14 @@ struct Paint {
 
 #[derive(Default)]
 pub struct Accents {
-   animated:   animated::Animated,
-   owners:     Vec<(String, Palette)>,
-   font_roots: HashMap<i32, HashSet<String>>,
-   originals:  HashMap<i32, Vec<Paint>>,
+   animated:    animated::Animated,
+   owners:      Vec<(String, Palette)>,
+   font_owners: HashSet<String>,
+   font_roots:  HashMap<i32, HashSet<String>>,
+   originals:   HashMap<i32, Vec<Paint>>,
 }
 
-fn argb(v: &Value) -> Option<u32> {
+pub(crate) fn argb(v: &Value) -> Option<u32> {
    match v {
       Value::I32(n) => Some(n.cast_unsigned()),
       Value::I64(n) => {
@@ -214,8 +215,12 @@ fn stop_colors(value: &Value) -> Option<&Vec<Value>> {
    }
 }
 
+fn text_runs(prop: Prop) -> bool {
+   prop == crate::prop!("spans") || prop == crate::prop!("valueSpans")
+}
+
 fn candidate(prop: Prop, value: &Value) -> bool {
-   if prop == crate::prop!("spans") {
+   if text_runs(prop) {
       return matches!(value, Value::Arr(spans) if spans.iter().any(|s| link_color(s).is_some() || s.field(Prop::FONT_FAMILY.key()).is_some()));
    }
    if gradient(prop) {
@@ -236,10 +241,11 @@ fn replacement(
    id: i32,
    prop: Prop,
    v: &Value,
-   palette: Palette,
-   roots: &HashMap<i32, HashSet<String>>,
+   palette: Option<Palette>,
+   system_font: bool,
 ) -> Option<Value> {
    if gradient(prop) {
+      let palette = palette?;
       let stops = stop_colors(v)?;
       if protected(mirror, id) || !stops.iter().any(|s| argb(s).is_some_and(brand_fill)) {
          return None;
@@ -273,25 +279,26 @@ fn replacement(
       return Some(out);
    }
    if prop == Prop::FONT_FAMILY {
-      let link = palette.system_links
+      let link = palette.is_some_and(|p| p.system_links)
          && mirror
             .surface(id)
             .is_some_and(|s| s.link_ink || s.role == Some("link"))
          && !protected(mirror, id);
-      return (plain_family(v) && (link || uses_system_font(mirror, id, roots)))
-         .then(|| Value::Str("sans-serif".into()));
+      return (plain_family(v) && (link || system_font)).then(|| Value::Str("sans-serif".into()));
    }
-   if prop == crate::prop!("spans") {
+   if text_runs(prop) {
       let Value::Arr(spans) = v else { return None };
       let mut result = None;
-      let scoped = uses_system_font(mirror, id, roots);
+      let pal = palette.filter(|_| prop == crate::prop!("spans"));
       for (i, span) in spans.iter().enumerate() {
          let Value::Obj(_) = span else { continue };
          let link = link_color(span).filter(|_| !protected(mirror, id));
          let family = span.field(Prop::FONT_FAMILY.key());
-         let font = ((scoped && family.is_some()) || (palette.system_links && link.is_some()))
+         let font = ((system_font && (family.is_some() || link.is_some()))
+            || (pal.is_some_and(|p| p.system_links) && link.is_some()))
             && family.is_none_or(plain_family);
-         if link.is_none() && !font {
+         let color = link.zip(pal);
+         if color.is_none() && !font {
             continue;
          }
          let out = result.get_or_insert_with(|| spans.clone());
@@ -303,7 +310,7 @@ fn replacement(
                   fields.push((key.key(), value));
                }
             };
-            if let Some(color) = link {
+            if let Some((color, palette)) = color {
                set(Prop::COLOR, colored(color, palette.primary));
             }
             if font {
@@ -316,6 +323,7 @@ fn replacement(
    if !scalar(prop) {
       return None;
    }
+   let palette = palette?;
    let color = argb(v)?;
    if color >> 24 == 0 {
       return None;
@@ -336,6 +344,11 @@ fn replacement(
 }
 
 impl Accents {
+   pub fn enable_system_font(&mut self, owner: &str) -> bool {
+      let first = self.font_owners.is_empty();
+      self.font_owners.insert(owner.to_owned()) && first
+   }
+
    pub fn font_root(&mut self, owner: &str, id: i32) -> bool {
       self
          .font_roots
@@ -348,6 +361,7 @@ impl Accents {
       let before = self.owners.last().map(|o| o.1);
       let mut removed = false;
       if palette.is_none() {
+         removed = self.font_owners.remove(owner) && self.font_owners.is_empty();
          self.font_roots.retain(|_, owners| {
             removed |= owners.remove(owner);
             !owners.is_empty()
@@ -364,6 +378,7 @@ impl Accents {
    /// plugin unload all have the original value available.
    pub fn rewrite(&mut self, ops: &mut Vec<Op>, mirror: &Mirror) -> bool {
       let palette = self.owners.last().map(|o| o.1);
+      let global_font = !self.font_owners.is_empty();
       let mut changed = false;
       let mut roots = Vec::new();
       for op in &mut *ops {
@@ -388,7 +403,7 @@ impl Accents {
             },
             _ => {},
          }
-         let default_family = matches!(op, Op::Create {kind:crate::ViewKind::Text | crate::ViewKind::Markup,props,..} if !props.iter().any(|(k,_)| *k==Prop::FONT_FAMILY));
+         let default_family = matches!(op, Op::Create {kind:crate::ViewKind::Text | crate::ViewKind::Input | crate::ViewKind::Markup,props,..} if !props.iter().any(|(k,_)| *k==Prop::FONT_FAMILY));
          let (Op::Create { id, props, .. } | Op::Update { id, props }) = op else {
             continue;
          };
@@ -410,14 +425,13 @@ impl Accents {
                self.remove(*id, *prop);
                continue;
             }
-            let mapped =
-               palette.and_then(|p| replacement(mirror, *id, *prop, value, p, &self.font_roots));
+            let font = global_font || uses_system_font(mirror, *id, &self.font_roots);
+            let mapped = replacement(mirror, *id, *prop, value, palette, font);
             let item = Paint {
                key:         *prop,
                source:      value.clone(),
                applied:     mapped.is_some(),
-               scoped_font: *prop == crate::prop!("spans")
-                  && uses_system_font(mirror, *id, &self.font_roots),
+               scoped_font: text_runs(*prop) && font,
             };
             let stored = self.originals.entry(*id).or_default();
             if let Some(old) = stored.iter_mut().find(|old| old.key == *prop) {
@@ -434,7 +448,7 @@ impl Accents {
             props.pop();
          }
       }
-      if let Some(palette) = palette {
+      if palette.is_some() || !self.font_roots.is_empty() {
          let mut seen = HashSet::new();
          while let Some(id) = roots.pop() {
             if !seen.insert(id) {
@@ -442,7 +456,14 @@ impl Accents {
             }
             roots.extend_from_slice(mirror.kids(id));
             if let Some(paints) = self.originals.get_mut(&id)
-               && let Some(op) = repaint(paints, mirror, id, Some(palette), false, &self.font_roots)
+               && let Some(op) = repaint(
+                  paints,
+                  mirror,
+                  id,
+                  palette,
+                  false,
+                  global_font || uses_system_font(mirror, id, &self.font_roots),
+               )
             {
                ops.push(op);
                changed = true;
@@ -466,7 +487,16 @@ impl Accents {
       let mut ops: Vec<_> = self
          .originals
          .iter_mut()
-         .filter_map(|(&id, props)| repaint(props, mirror, id, palette, true, &self.font_roots))
+         .filter_map(|(&id, props)| {
+            repaint(
+               props,
+               mirror,
+               id,
+               palette,
+               true,
+               !self.font_owners.is_empty() || uses_system_font(mirror, id, &self.font_roots),
+            )
+         })
          .collect();
       ops.extend(self.animated.refresh(mirror, palette));
       ops
@@ -479,13 +509,12 @@ fn repaint(
    id: i32,
    palette: Option<Palette>,
    force: bool,
-   roots: &HashMap<i32, HashSet<String>>,
+   system_font: bool,
 ) -> Option<Op> {
    let mut props = Vec::new();
    for paint in paints {
-      let mapped =
-         palette.and_then(|p| replacement(mirror, id, paint.key, &paint.source, p, roots));
-      let scoped = paint.key == crate::prop!("spans") && uses_system_font(mirror, id, roots);
+      let mapped = replacement(mirror, id, paint.key, &paint.source, palette, system_font);
+      let scoped = text_runs(paint.key) && system_font;
       if ((force || scoped != paint.scoped_font) && mapped.is_some())
          || paint.applied != mapped.is_some()
       {
@@ -638,6 +667,95 @@ mod tests {
       assert_eq!(v[0], make("gg sans"));
       a.set("m3e", None);
       assert_eq!(get(&a.refresh(&m), 2, runs), Some(&raw));
+   }
+
+   #[test]
+   fn standalone_font_and_theme_can_be_enabled_and_unloaded_in_either_order() {
+      let family = Prop::FONT_FAMILY;
+      let runs = crate::prop!("spans");
+      let url = crate::prop!("url");
+      let bold = crate::prop!("fontWeight");
+      let native = Value::Str("gg sans".into());
+      let system = Value::Str("sans-serif".into());
+      let link = Value::Obj(vec![
+         (url.key(), Value::Str("https://example.org".into())),
+         (Prop::COLOR.key(), color(0xFF00_6DD4)),
+         (bold.key(), Value::I32(700)),
+      ]);
+      let code = Value::Obj(vec![(family.key(), Value::Str("monospace".into()))]);
+      let raw = Value::Arr(vec![link.clone(), code.clone()]);
+      for font_first in [true, false] {
+         let (mut m, mut a) = (Mirror::default(), Accents::default());
+         send(&mut m, &mut a, vec![create(7, ViewKind::Text, vec![
+            (family, native.clone()),
+            (runs, raw.clone()),
+         ])]);
+         if font_first {
+            a.enable_system_font("font");
+         } else {
+            a.set("theme", Some(PINK));
+         }
+         let first = a.refresh(&m);
+         assert_eq!(get(&first, 7, family), font_first.then_some(&system));
+         let Some(Value::Arr(v)) = get(&first, 7, runs) else {
+            panic!()
+         };
+         assert_eq!(v[0].field(family.key()), font_first.then_some(&system));
+         assert_eq!(
+            v[0].field(Prop::COLOR.key()),
+            Some(&color(if font_first {
+               0xFF00_6DD4
+            } else {
+               PINK.primary
+            }))
+         );
+         if font_first {
+            a.set("theme", Some(PINK));
+         } else {
+            a.enable_system_font("font");
+         }
+         let mounted = send(&mut m, &mut a, vec![create(8, ViewKind::Input, vec![(
+            crate::prop!("valueSpans"),
+            raw.clone(),
+         )])]);
+         assert_eq!(get(&mounted, 8, family), Some(&system));
+         let Some(Value::Arr(input)) = get(&mounted, 8, crate::prop!("valueSpans")) else {
+            panic!()
+         };
+         assert_eq!(
+            input[0].field(Prop::COLOR.key()),
+            link.field(Prop::COLOR.key())
+         );
+         let both = a.refresh(&m);
+         let Some(Value::Arr(v)) = get(&both, 7, runs) else {
+            panic!()
+         };
+         assert_eq!(v[0].field(family.key()), Some(&system));
+         assert_eq!(v[0].field(Prop::COLOR.key()), Some(&color(PINK.primary)));
+         assert_eq!(v[0].field(url.key()), link.field(url.key()));
+         assert_eq!(v[0].field(bold.key()), Some(&Value::I32(700)));
+         assert_eq!(v[1], code);
+         a.set(if font_first { "font" } else { "theme" }, None);
+         let left = a.refresh(&m);
+         assert_eq!(
+            get(&left, 7, family),
+            Some(if font_first { &native } else { &system })
+         );
+         let Some(Value::Arr(v)) = get(&left, 7, runs) else {
+            panic!()
+         };
+         assert_eq!(v[0].field(family.key()), (!font_first).then_some(&system));
+         assert_eq!(
+            v[0].field(Prop::COLOR.key()),
+            Some(&color(if font_first {
+               PINK.primary
+            } else {
+               0xFF00_6DD4
+            }))
+         );
+         a.set(if font_first { "theme" } else { "font" }, None);
+         assert_eq!(get(&a.refresh(&m), 7, runs), Some(&raw));
+      }
    }
 
    #[test]
