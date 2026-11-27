@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.13
+// @version 0.11.14
 // @author onichan0923
 // @enabled false
 // @bridge
@@ -933,6 +933,9 @@
       });
       return true;
     }
+    function segmentTrack() {
+      return { ...plainSurface, blur: null, background: conversation.control, radius: 999, clip: true };
+    }
     function paintTabs(root) {
       if (!root) return;
       const all = descendants(root, 5, 42);
@@ -963,7 +966,7 @@
         if (n.id === root.id) break;
       }
       if (track !== rail) ui.update(rail.id, { ...plainSurface, blur: null });
-      ui.update(track.id, { ...plainSurface, blur: null, background: conversation.control, radius: 999, clip: true });
+      ui.update(track.id, segmentTrack());
       for (const n of descendants(rail, 4, 32)) {
         if (n.id === rail.id || tabs.some((t) => t.id === n.id) || !["view", "stack"].includes(kindOf(n))) continue;
         ui.update(n.id, { ...plainSurface, blur: null });
@@ -977,6 +980,23 @@
     }
     const profilePager = "profile-tab-pages";
     let profileSelection = null;
+    let profileViewport = null;
+    function horizontalInsets(node, column) {
+      let width = 0;
+      for (let n = node; n && n.id !== column.id; n = parent(n)) {
+        const m = original(n)?.margin, up = parent(n);
+        width += (m?.[0] || 0) + (m?.[2] || 0);
+        if (up && up.id !== column.id) {
+          const pad = original(up)?.padding;
+          width += (pad?.[0] || 0) + (pad?.[2] || 0);
+        }
+      }
+      return width;
+    }
+    function profileRailWidth(pager, parts) {
+      if (profileViewport?.id !== pager.id || profileViewport.parent !== pager.parent) return "fill";
+      return Math.max(1, profileViewport.width + horizontalInsets(pager, parts.column) - horizontalInsets(parts.rail, parts.column));
+    }
     let profileFace = null;
     function profileTabs(pager) {
       const frame = parent(pager), column = parent(frame);
@@ -1007,6 +1027,41 @@
         if (n.accessibilityId === "profile-sheet") break;
       }
       return primary?.brandFill === true;
+    }
+    function paintProfilePage(pager, column) {
+      const canvas = { background: palette.canvas, bg: 0, blur: null };
+      let boundary = column.sheet;
+      for (let n = column, d = 0; boundary == null && n && d < 8; n = parent(n), d++) {
+        if (n.accessibilityId === "profile-sheet" || kindOf(n) === "sheet") boundary = n.id;
+      }
+      for (let n = column, d = 0; n && d < 8 && n.id !== ui.root(); n = parent(n), d++) {
+        const kind = kindOf(n);
+        if (n.accessibilityId === "profile-sheet" || kind === "sheet") {
+          const color = original(n)?.fill;
+          if (color != null && neutralSurface(color)) ui.update(n.id, canvas);
+          break;
+        }
+        if (d && (n.sheet !== column.sheet || !["stack", "view", "scroll", "list"].includes(kind))) break;
+        const originalColor = original(n)?.fill;
+        if (!d || originalColor != null && neutralSurface(originalColor)) ui.update(n.id, canvas);
+        if (boundary == null || n.id === boundary) break;
+      }
+      const pages = children(ui.node(pager.children[0]));
+      for (const page of pages) {
+        ui.update(page.id, canvas);
+        const work = [[page, 0, palette.canvas]];
+        for (let i = 0; i < work.length && i < 180; i++) {
+          const [n, depth, backing] = work[i], shape = original(n);
+          if (!shape || depth > 10 || shape.gradient || !["stack", "view", "list", "scroll"].includes(kindOf(n))) continue;
+          const color = shape.fill ?? shape.background;
+          let background = backing;
+          if (n.id !== page.id && color >>> 24 >= 220 && neutralSurface(color)) {
+            if (shape.topLeft > 2 || shape.topRight > 2 || interactive(n)) background = palette.row;
+            ui.update(n.id, { background, bg: 0, blur: null });
+          }
+          for (const c of children(n)) work.push([c, depth + 1, background]);
+        }
+      }
     }
     function clearProfileFace() {
       if (profileFace) profileFace.remove();
@@ -1047,7 +1102,21 @@
       if (Number.isInteger(index) && index >= 0 && index < entries.length) active = index;
       else if (active < 0) active = profileSelection?.pager === pager.id && profileSelection.first === entries[0].id ? profileSelection.index : 0;
       profileSelection = { pager: pager.id, first: entries[0].id, index: active };
-      ui.update(rail.id, { ...plainSurface, background: conversation.control, radius: 999, clip: true });
+      paintProfilePage(pager, parts.column);
+      const strip = parent(rail), stripParent = parent(strip);
+      const seam = stripParent && children(stripParent).find((n) => n.id !== strip.id && divider(n));
+      if (seam) ui.update(seam.id, { opacity: 0, height: 0, minHeight: 0, margin: 0 });
+      const pair = entries.length === 2;
+      const railWidth = pair ? profileRailWidth(pager, parts) : null;
+      const slotWidth = typeof railWidth === "number" ? Math.max(1, (railWidth - 8) / 2) : null;
+      ui.update(rail.id, { ...segmentTrack(), ...pair && {
+        width: railWidth,
+        minWidth: slotWidth == null ? 0 : railWidth,
+        minHeight: 44,
+        padding: [4, 4, 4, 4],
+        gap: 0,
+        margin: 0
+      } });
       ui.update(indicator.id, { opacity: 0 });
       entries.forEach((tab, i) => {
         const selected = active === i, ink = selected ? palette.onAccent : palette.ink;
@@ -1059,7 +1128,8 @@
           minHeight: 36,
           padding: [inset?.[0] || 0, 0, inset?.[2] || 0, 0],
           align: "center",
-          justify: "center"
+          justify: "center",
+          ...pair && { width: slotWidth ?? "wrap", flex: slotWidth == null ? 1 : 0, minWidth: slotWidth ?? 0, margin: 0, padding: 0 }
         });
         const label = actionLabel(tab);
         for (let n = parent(label); n && n.id !== tab.id; n = parent(n))
@@ -1503,6 +1573,8 @@
         const first = path[0], props = edits.get(first.id) || {};
         const [left, top, right, bottom] = props.margin || original(first)?.margin || [0, 0, 0, 0];
         props.margin = [left, top + 2, right, bottom];
+        const pad = props.padding || original(first)?.padding || [0, 0, 0, 0];
+        props.padding = [pad[0], pad[1] + 6, pad[2], pad[3]];
         edits.set(first.id, props);
       }
       const previous = categoryInsets.get(list.id);
@@ -2131,6 +2203,49 @@
         });
       }
     }
+    function stackedAlbum(root) {
+      let group = root;
+      const wrappers = [];
+      while (group && wrappers.length < 4 && group.children.length === 1 && shellNode(group) && !interactive(group)) {
+        wrappers.push(group);
+        group = ui.node(group.children[0]);
+      }
+      if (kindOf(group) !== "stack" || ![2, 4].includes(group.children.length)) return null;
+      const tiles = [];
+      for (const shell of children(group)) {
+        if (kindOf(shell) !== "stack" || interactive(shell) || shell.children.length !== 1) return null;
+        const hit = ui.node(shell.children[0]), image = hit?.children.length === 1 && ui.node(hit.children[0]);
+        if (kindOf(hit) !== "stack" || !interactive(hit) || kindOf(image) !== "image" || [shell, hit, image].some((n) => original(n)?.height > 0 && original(n).height <= 40)) return null;
+        tiles.push({ shell, hit, image });
+      }
+      return { wrappers, group, tiles };
+    }
+    function fitStackedAlbum(album, width) {
+      const { wrappers, group, tiles } = album;
+      const frame = { width: width || "fill", minWidth: 0 };
+      for (const n of wrappers) ui.update(n.id, frame);
+      const gap = 4;
+      if (tiles.length === 4 && !(original(group)?.height > 0)) {
+        const heights = tiles.map(({ shell, hit, image }) => [shell, hit, image].map((n) => original(n)?.height).find((h) => h > 0) || 0);
+        const top = Math.max(heights[0], heights[1]), bottom = Math.max(heights[2], heights[3]);
+        if (top && bottom) frame.minHeight = top + gap + bottom;
+      }
+      ui.update(group.id, frame);
+      tiles.forEach(({ shell, hit, image }, i) => {
+        const right = i % 2 === 1, bottom = i >= 2;
+        const size = width ? { width: (width - gap) / 2, maxWidth: null, padding: 0 } : { width: "50%", maxWidth: null, padding: [right ? gap / 2 : 0, 0, right ? 0 : gap / 2, 0] };
+        ui.update(shell.id, {
+          ...size,
+          absolute: false,
+          minWidth: 0,
+          margin: 0,
+          translateX: 0,
+          translateY: 0,
+          gravity: (bottom ? "bottom" : "top") + (right ? "|end" : "|start")
+        });
+        for (const n of [hit, image]) ui.update(n.id, { width: "fill", minWidth: 0, maxWidth: null });
+      });
+    }
     function galleryLayout(root) {
       if (!root?.children.length) return null;
       let budget = 96;
@@ -2173,7 +2288,7 @@
     function messageMedia(node) {
       const name = node.accessibilityId || "";
       if (/^(?:embed:|attachment[.:]|message\.attachments?:)/.test(name)) return true;
-      if (galleryLayout(node)) return true;
+      if (stackedAlbum(node) || galleryLayout(node)) return true;
       if (name || original(node)?.horizontal) return false;
       let part = node;
       for (let depth = 0; part && depth < 8; depth++) {
@@ -2192,6 +2307,11 @@
     }
     function fitMediaBranch(node, depth = 0, context = {}) {
       if (!node || depth > 7 || context.skip?.has(node.id)) return null;
+      const stack = stackedAlbum(node);
+      if (stack) {
+        fitStackedAlbum(stack, context.width);
+        return "gallery";
+      }
       const gallery = galleryLayout(node);
       if (gallery) {
         sizeGallery(gallery);
@@ -2247,7 +2367,10 @@
       if (!(width > 0) || !Number.isFinite(width)) return;
       for (const id of owner.parts) {
         const item = ui.node(id);
-        if (item?.parent === owner.box) ui.update(id, { width, maxWidth: width, minWidth: 0 });
+        if (item?.parent !== owner.box) continue;
+        const stack = stackedAlbum(item);
+        if (stack) fitStackedAlbum(stack, width);
+        else ui.update(id, { width, maxWidth: width, minWidth: 0 });
       }
     }
     const rowBoxes = /* @__PURE__ */ new Map();
@@ -2446,9 +2569,11 @@
       }
       let fitted = false;
       const albums = [];
+      const prior = albumWidths.get(marker.id);
+      const width = prior?.box === box.id && prior.name === marker.accessibilityId ? prior.width : null;
       for (const part of parts.slice(body ? box.children.indexOf(body.id) : 0)) {
         if (part.id === body?.id && marker.id !== anchor.id) continue;
-        const result = fitMediaBranch(part, 0, { skip: cardIds });
+        const result = fitMediaBranch(part, 0, { skip: cardIds, width });
         if (result) fitted = true;
         if (result === "gallery" && part.id !== marker.id) albums.push(part.id);
       }
@@ -2469,8 +2594,6 @@
         padding: [10, 5, 10, media ? 10 : 5]
       });
       if (albums.length && marker.parent === box.id && marker.accessibilityId.startsWith(messageMatch.prefix)) {
-        const prior = albumWidths.get(marker.id);
-        const width = prior?.box === box.id && prior.name === marker.accessibilityId ? prior.width : null;
         const owner = { box: box.id, name: marker.accessibilityId, parts: albums, width };
         albumWidths.set(marker.id, owner);
         ui.update(marker.id, { width: "fill" });
@@ -2913,7 +3036,7 @@
       for (const page of inboxPages) patch(page, { ...flat, background: conversation.body });
       rules.push(ui.patchProps(requestActions, { addOn: ["appeared"] }));
       rules.push(ui.patchProps(messageMatch, { addOn: ["layout"] }));
-      rules.push(ui.patchProps(profilePager, { addOn: ["appeared"] }));
+      rules.push(ui.patchProps(profilePager, { addOn: ["appeared", "layout"] }));
       patch("composer", textField);
       patch(searchId, textField);
       patch("search.entry", { background: 0, activeBackground: palette.ripple, radius: 20, activeRadius: 20.5 });
@@ -2989,7 +3112,7 @@
       copyLayout: {
         type: "button",
         title: "\u8907\u88FD\u4ECB\u9762\u7D50\u69CB",
-        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.13", layouts: Object.fromEntries(layouts) }))
+        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.14", layouts: Object.fromEntries(layouts) }))
       }
     });
     recordLayouts = settings.inspect === true;
@@ -3128,6 +3251,14 @@
       if (pendingDialog > Date.now() && n.list == null && n.sheet == null) maybeDialog(n);
     });
     watchers.push(ui.onEvent("layout", (e) => {
+      if (e.accessibilityId === profilePager) {
+        const pager = ui.node(e.node), width2 = e.payload?.width;
+        if (pager?.accessibilityId === profilePager && width2 > 0 && Number.isFinite(width2) && (profileViewport?.id !== pager.id || profileViewport.parent !== pager.parent || profileViewport.width !== width2)) {
+          profileViewport = { id: pager.id, parent: pager.parent, width: width2 };
+          paintProfile(pager);
+        }
+        return;
+      }
       const owner = albumWidths.get(e.node);
       if (!owner || e.accessibilityId !== owner.name || ui.node(e.node)?.parent !== owner.box) return;
       const width = e.payload?.width;
