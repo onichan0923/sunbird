@@ -989,6 +989,8 @@ declare namespace Phoenix {
       get(): SystemAppearance | null;
       /** Overrides Android host brand, brandText and window content background on subsequent theme writes. Removed on unload. */
       setChromeColors?(brand: number, onBrand: number, background: number): () => void;
+      /** Paint the Android status-bar inset until this plugin unloads. */
+      setStatusBarColor?(color: number, darkIcons: boolean): void;
       /** Rechecks system colors on appearance and app lifecycle events. Returns an unsubscribe function. */
       onChange(listener: (state: SystemAppearance) => void): () => void;
     };
@@ -1466,6 +1468,11 @@ declare namespace Phoenix {
       height: number | null;
       opaque: boolean;
       backplate: boolean;
+      topLeft: number;
+      topRight: number;
+      padding?: [number, number, number, number];
+      margin?: [number, number, number, number];
+      fill: number | null;
       pressable: boolean;
       horizontal: boolean;
       gradient: boolean;

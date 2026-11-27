@@ -329,6 +329,13 @@ pub fn object<'js>(ctx: &Ctx<'js>, plugin: &str) -> rquickjs::Result<Object<'js>
          js_value(&ctx, snapshot().as_ref())
       })?,
    )?;
+   let bar_owner = plugin.to_owned();
+   obj.set(
+      "setStatusBarColor",
+      Function::new(ctx.clone(), move |color: u32, dark_icons: bool| {
+         crate::status_bar::set(&bar_owner, Some((color, dark_icons)));
+      })?,
+   )?;
    let theme_owner = plugin.to_owned();
    obj.set(
       "setChromeColors",
@@ -423,6 +430,7 @@ mod theme_tests {
 }
 
 pub fn unload(ctx: &Ctx<'_>, plugin: &str) {
+   crate::status_bar::set(plugin, None);
    set_chrome(plugin, None);
    retain(ctx, |listener| listener.owner != plugin);
 }

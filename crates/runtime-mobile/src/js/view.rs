@@ -321,6 +321,16 @@ pub fn add_view_queries<'js>(ctx: &Ctx<'js>, ui: &Object<'js>) -> rquickjs::Resu
             obj.set("backplate", surface.backplate)?;
             obj.set("pressable", surface.pressable)?;
             obj.set("horizontal", surface.horizontal)?;
+            let [left, right] = surface.top_corners();
+            obj.set("topLeft", left)?;
+            obj.set("topRight", right)?;
+            if let Some(edges) = surface.padding {
+               obj.set("padding", edges.to_vec())?;
+            }
+            if let Some(edges) = surface.margin {
+               obj.set("margin", edges.to_vec())?;
+            }
+            obj.set("fill", surface.fill().map(f64::from))?;
             obj.set("gradient", surface.gradient())?;
             Ok(obj.into_value())
          },

@@ -41,18 +41,43 @@ pub struct Surface {
    pub pressable:  bool,
    pub horizontal: bool,
    gradients:      u8,
+   radii:          [Option<f64>; 3],
+   fills:          [Option<u32>; 2],
+   pub padding:    Option<[f32; 4]>,
+   pub margin:     Option<[f32; 4]>,
 }
 
 impl Surface {
+   #[must_use]
+   pub fn top_corners(&self) -> [f64; 2] {
+      [self.radii[1], self.radii[2]].map(|corner| corner.or(self.radii[0]).unwrap_or_default())
+   }
+
+   #[must_use]
+   pub fn fill(&self) -> Option<u32> {
+      self
+         .fills
+         .iter()
+         .flatten()
+         .copied()
+         .find(|color| color >> 24 == 255)
+   }
+
    fn update(&mut self, props: &Props) {
       for (key, value) in props {
          match *key {
             BACKGROUND | BG => {
-               let opaque = match value {
-                  Value::I32(n) => n.to_be_bytes()[0] == 255,
-                  Value::I64(n) => n.to_be_bytes()[4] == 255,
-                  _ => false,
+               let color = match value {
+                  Value::I32(n) => Some(n.cast_unsigned()),
+                  Value::I64(n) => {
+                     u32::try_from(*n)
+                        .ok()
+                        .or_else(|| i32::try_from(*n).ok().map(i32::cast_unsigned))
+                  },
+                  _ => None,
                };
+               self.fills[usize::from(*key == BG)] = color;
+               let opaque = color.is_some_and(|color| color >> 24 == 255);
                if *key == BG {
                   self.backplate = opaque;
                } else {
@@ -72,6 +97,37 @@ impl Surface {
             },
             key if key == crate::prop!("direction") => {
                self.horizontal = value.as_str() == Some("row");
+            },
+            key if key == crate::prop!("padding") || key == crate::prop!("margin") => {
+               let edges = match value {
+                  Value::Rect(edges) => Some(*edges),
+                  _ => None,
+               };
+               if key == crate::prop!("padding") {
+                  self.padding = edges;
+               } else {
+                  self.margin = edges;
+               }
+            },
+            key if [
+               crate::prop!("radius"),
+               crate::prop!("radiusTopLeft"),
+               crate::prop!("radiusTopRight"),
+            ]
+            .contains(&key) =>
+            {
+               let at = if key == crate::prop!("radius") {
+                  0
+               } else if key == crate::prop!("radiusTopLeft") {
+                  1
+               } else {
+                  2
+               };
+               self.radii[at] = match value {
+                  Value::I32(n) => Some(f64::from(*n)),
+                  Value::F64(n) if n.is_finite() => Some(*n),
+                  _ => None,
+               };
             },
             key => {
                if let Some(index) = GRADIENTS.iter().position(|gradient| *gradient == key) {
@@ -539,6 +595,8 @@ mod tests {
          &[make(vec![
             (BACKGROUND, Value::I32(-1)),
             (Prop::HEIGHT, Value::F64(0.5)),
+            (crate::prop!("radius"), Value::I32(20)),
+            (crate::prop!("radiusTopLeft"), Value::F64(18.0)),
             (GRADIENTS[0], gradient.clone()),
             (GRADIENTS[2], gradient),
          ])],
@@ -552,8 +610,10 @@ mod tests {
          false,
       );
       let surface = mirror.surface(27).unwrap();
+      assert_eq!(surface.fill(), Some(u32::MAX));
       assert!(surface.gradient() && surface.opaque);
       assert_eq!(surface.height, Some(0.5));
+      assert_eq!(surface.top_corners(), [18.0, 20.0]);
       assert!(mirror.props(27).is_none());
       mirror.apply(&[make(vec![(BG, Value::I64(0xFFFF_FFFF))])], false);
       let surface = mirror.surface(27).unwrap();

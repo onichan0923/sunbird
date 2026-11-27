@@ -70,6 +70,10 @@ Leading `// @` lines describe the plugin. Besides gateway hooks there are `setti
 The bundled plugins live in `plugins/*/src/index.ts`. CI bundles them with esbuild
 (`web/tools/bundle-plugins.ts`) and publishes them to https://assets.sunbird.tools/.
 
+Building this fork's Android runtime requires a JDK, Android SDK platform 30 or newer, and
+SDK Build Tools with D8. Point `ANDROID_HOME` at the SDK. Cargo compiles the status-bar helper
+from `crates/runtime-mobile/android/StatusBar.java` and bundles it with each Android ABI.
+
 ## Repository
 
 | Path | What |

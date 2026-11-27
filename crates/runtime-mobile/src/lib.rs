@@ -20,6 +20,7 @@ mod picker;
 mod settings;
 mod socket;
 #[cfg(target_os = "android")] mod staff;
+#[cfg(target_os = "android")] mod status_bar;
 #[cfg(target_os = "android")] mod store;
 
 use std::{
