@@ -60,15 +60,21 @@ async function input(build,r){
 onmessage=async({data:r})=>{
   let build;
   try{
-    const specs=await (await get('./loaders.json')).json();
+    const specs=await (await get('./loaders.json?v=072')).json();
     await init({module_or_path:await unpack(specs.wasm)});
     build=new Build();
     await input(build,r);
     report('加入系統外觀執行檔…');
     build.addLibrary('libplm.so',await unpack(specs[r.abi]));
     build.addLibrary('libshadowhook_nothing.so',new Uint8Array(await (await get('./vendor/shadow-'+r.abi+'.so')).arrayBuffer()));
-    if(r.theme)build.addPlugin('m3e-theme',await (await get('./m3e-theme.js')).text());
-    const used=new Set(r.theme?['m3e-theme']:[]);
+    if(r.theme || r.recover){
+      const source=await (await get('./m3e-theme.js?v=072')).text();
+      // The runtime reads this line from the APK before looking up installed
+      // JS. The token belongs to this APK so reopening it respects later choices.
+      const pause=r.recover?'// @pause-once '+crypto.randomUUID().replaceAll('-','')+'\n':'';
+      build.addPlugin('m3e-theme',pause+source);
+    }
+    const used=new Set(r.theme||r.recover?['m3e-theme']:[]);
     for(const file of r.plugins){
       const name=file.name.replace(/\.js$/i,'');
       if(!/^[a-zA-Z0-9_-]+$/.test(name)||used.has(name))throw new Error('插件檔名無效或重複：'+file.name);

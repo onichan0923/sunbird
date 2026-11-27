@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.7.1
+// @version 0.7.2
 // @author onichan0923
 
 (() => {
@@ -88,7 +88,7 @@
   const seenPanels = new Map();
   const layouts = new Map();
   let recordLayouts = false;
-  let nativeScheme = null, lastNativeAt = 0, releaseChrome = null;
+  let nativeScheme = null, lastNativeAt = 0;
 
   // AppState.setTheme uses the host method's field keys, a separate table
   // from ui.update's view property keys. The Android host applies background
@@ -229,7 +229,7 @@
         if (contains(n, c => c.accessibilityId === contextCancel)) continue;
         for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...flat, gradient: null, backdropBlur: 0 });
       }
-      ui.update(host.id, { ...flat, gradient: null, background: conversation.body, radius: 0 });
+      ui.update(host.id, { ...flat, gradient: null, radius: 0 });
       branch = host;
     }
   }
@@ -860,34 +860,16 @@
       if (lanes.filter(n => sidebarRow(n) || (n.children.length === 1 && children(n).some(sidebarRow))).length >= 2) {
         ui.update(group.id, fill);
         if (content) paintChannelPane(group);
-        const viewport = parent(group);
-        if (viewport && viewport.id !== ui.root() && viewport.children.length === 1) ui.update(viewport.id, fill);
         return;
       }
     }
   }
 
   const dockSlots = ["panels-dock-slot", "main-tabs-screen-dock-slot", "main-tabs-over-stack-dock-slot", "over-stack-dock-slot"];
-  const paneChrome = ["main-tabs", "main-tabs-frame-content", "main-tabs-frame-panels", "main-tabs-frame-border-clip"];
-  const dockFrames = ["main-tabs-dock-frame", "main-tabs-dock-frame-content"];
   const plainSurface = { ...flat, gradient: null, gradientMask: null, backdropBlur: 0 };
   const noLine = { ...plainSurface, height: 0, minHeight: 0, opacity: 0 };
 
-  function clearDockBacking(panel) {
-    let branch = panel;
-    for (let i = 0; i < 4 && branch; i++, branch = parent(branch)) {
-      const frame = parent(branch);
-      if (!shellNode(frame) || frame.sheet != null || frame.list != null || frame.children.length > 5) break;
-      const others = children(frame).filter(n => n.id !== branch.id);
-      const backing = n => !pressable(n) && (!n.accessibilityId || n.accessibilityId === "main-frame-gradient") &&
-        (n.kind == null || n.kind === "view") && !n.children.length;
-      if (!others.every(backing)) break;
-      ui.update(frame.id, { ...plainSurface, background: conversation.body });
-      for (const n of others) ui.update(n.id, plainSurface);
-    }
-  }
-
-  function paintUserDock(dock, named = false) {
+  function paintUserDock(dock) {
     const queue = [[dock, 0]];
     for (let budget = 75; queue.length && budget > 0; budget--) {
       const [n, depth] = queue.shift();
@@ -900,9 +882,8 @@
         (leaf.kind === "image" && !leaf.children.length), 3);
       const namedEnd = c => contains(c, leaf => /notif|inbox|bell/i.test(leaf.accessibilityId || ""), 3);
       const end = parts[parts.length - 1];
-      if (parts.length >= 2 && (named || namedEnd(end) || pressable(end)) &&
+      if (parts.length >= 2 && namedEnd(end) &&
           parts.slice(0, -1).some(hasIdentity)) {
-        clearDockBacking(n);
         ui.update(n.id, { ...plainSurface, background: conversation.userBar });
         if (shellNode(end)) ui.update(end.id, { background: palette.sheet });
         return true;
@@ -928,39 +909,23 @@
     return { background: conversation.body, ...barRadii(26, 0), clip: true, borderWidth: 0, borderColor: 0 };
   }
 
-  function headerEdge(frame) {
-    ui.update(frame.id, { ...flat, background: conversation.header });
-    // Search actions and server icons can also be unnamed leaves. Only clear
-    // the unnamed trailing rule under a row of header controls, or a named divider.
-    const parts = children(frame);
-    const last = parts[parts.length - 1];
-    for (const n of parts) {
-      const trailing = n === last && parts.length === 2 && parts[0].children.length >= 2 &&
-        !n.accessibilityId && divider(n) && !pressable(n) &&
-        (n.kind === "view" || (!n.kind && contains(parts[0], c => c.accessibilityId === "guild.menu" ||
-          c.accessibilityId === "search.entry", 4)));
-      if (dividerName.test(n.accessibilityId || "") || trailing) ui.update(n.id, { ...flat, opacity: 0, height: 0, minHeight: 0 });
+  function childOf(node, ancestorId) {
+    for (let depth = 0; node && depth < 12; depth++, node = parent(node)) {
+      if (node.parent === ancestorId) return node;
     }
+    return null;
   }
 
   function joinHeaderAndList(head, list) {
     const pane = commonFrame(head, list);
-    if (!shellNode(pane) || pane.id === list.id || pane.id === head.id) return;
-    let upper = head, lower = list;
-    while (upper && upper.parent !== pane.id) upper = parent(upper);
-    while (lower && lower.parent !== pane.id) lower = parent(lower);
+    if (!shellNode(pane) || pane.id === head.id || pane.id === list.id) return;
+    const upper = childOf(head, pane.id), lower = childOf(list, pane.id);
     if (!upper || !lower || upper.id === lower.id) return;
-    const items = children(pane), hi = items.findIndex(n => n.id === upper.id), lo = items.findIndex(n => n.id === lower.id);
-    ui.update(pane.id, { background: conversation.header });
-    if (hi >= 0 && lo === hi + 2 && divider(items[hi + 1]) && !pressable(items[hi + 1])) {
-      ui.update(items[hi + 1].id, { ...flat, height: 0, minHeight: 0, opacity: 0 });
-    }
-    const beforeList = items[lo - 1];
-    if (lo > 1 && hi < lo - 1 && beforeList && dividerName.test(beforeList.accessibilityId || "") &&
-        !pressable(beforeList) && !beforeList.children.length) ui.update(beforeList.id, noLine);
-    if (upper.id === head.id || (shellNode(upper) && upper.children.length <= 4)) headerEdge(upper);
-    // Apply the rounding to the stationary viewport, never a recycled row.
-    if (lower.id === list.id || (shellNode(lower) && lower.children.length === 1)) ui.update(lower.id, paneSurface());
+    const hi = pane.children.indexOf(upper.id), lo = pane.children.indexOf(lower.id);
+    if (hi < 0 || lo !== hi + 2) return;
+    const rule = ui.node(pane.children[hi + 1]);
+    if (rule && dividerName.test(rule.accessibilityId || "") && !rule.children.length && !pressable(rule))
+      ui.update(rule.id, noLine);
   }
 
   function paintChannelPane(list) {
@@ -971,10 +936,9 @@
     seenPanels.set(list.id, Date.now());
     const pane = commonFrame(head, list);
     rememberLayout("channel-pane", pane);
-    if (shellNode(pane)) ui.update(pane.id, { background: palette.canvas });
     styleGuildHeader(head);
     joinHeaderAndList(head, list);
-    for (const key of dockSlots) forLive(key, n => paintUserDock(n, true));
+    for (const key of dockSlots) forLive(key, paintUserDock);
     let lane = list;
     for (let i = 0; i < 7; i++) {
       const frame = parent(lane);
@@ -988,48 +952,13 @@
   function paintTopInset(header) {
     if (!header || header.sheet != null || header.list != null) return;
     applyNativePalette();
-    const fill = { ...plainSurface, background: conversation.header };
-    let branch = header;
-    for (let i = 0; i < 5; i++) {
-      const frame = parent(branch);
-      if (!shellNode(frame) || frame.sheet != null || frame.list != null ||
-          frame.children.length > 6 || (frame.accessibilityId && !/header|^chat$|^main-tabs|^navigation|^guild[.-]/.test(frame.accessibilityId))) break;
-      ui.update(frame.id, fill);
-      const at = frame.children.indexOf(branch.id);
-      if (at > 0 && at <= 2) for (const spacer of children(frame).slice(0, at)) {
-        if (shellNode(spacer) && !spacer.accessibilityId && !pressable(spacer) &&
-            (!spacer.children.length || (spacer.children.length === 1 && children(spacer).every(c =>
-              shellNode(c) && !c.children.length && !c.accessibilityId && !pressable(c))))) {
-          ui.update(spacer.id, fill);
-          for (const layer of children(spacer)) ui.update(layer.id, fill);
-        }
-      }
-      branch = frame;
-    }
-    const root = ui.node(ui.root());
-    if (root && root.sheet == null && !["modal","sheet"].includes(root.kind)) ui.update(root.id, fill);
+    if (headerNames.includes(header.accessibilityId) || header.accessibilityId === "guild-header-row")
+      ui.update(header.id, { background: conversation.header });
   }
 
   function styleHeader(search) {
     applyNativePalette();
     tintIcon(search, palette.accent);
-    let branch = search;
-    for (let depth = 0; depth < 4; depth++) {
-      const host = parent(branch);
-      if (!shellNode(host) || host.list != null || host.sheet != null ||
-          (host.accessibilityId && !headerNames.includes(host.accessibilityId))) return;
-      const parts = children(host);
-      if (parts.some(n => ["scroll", "list", "navigator"].includes(n.kind) ||
-          /^(?:message\.|composer|chat-list)/.test(n.accessibilityId || ""))) return;
-      if (parts.length > 1) {
-        ui.update(host.id, { background: palette.canvas });
-        paintTopInset(host);
-        const frame = parent(host);
-        if (shellNode(frame) && frame.children.length === 1 && !frame.accessibilityId) ui.update(frame.id, { background: palette.canvas });
-        return;
-      }
-      branch = host;
-    }
   }
 
   function cardSurface(n) {
@@ -1192,7 +1121,7 @@
     actions.forEach((n, i) => {
       ui.update(n.id, { ...clearFill, background: i ? palette.row : palette.accent, ...barRadii(18, 18), activeBackground: palette.pressed });
       const label = buttonLabel(n);
-      for (let inner = parent(label); inner && inner.id !== n.id; inner = parent(inner)) ui.update(inner.id, clearFill);
+      for (let inner = parent(label), depth = 0; inner && inner.id !== n.id && depth < 8; inner = parent(inner), depth++) ui.update(inner.id, clearFill);
       ui.update(buttonLabel(n).id, { color: i ? palette.ink : palette.onAccent });
     });
     return true;
@@ -1261,9 +1190,9 @@
       if (!lane) return;
       box = lane;
     }
-    let row = box;
     const list = ui.node(anchor.list);
-    while (row && row.id !== anchor.list && row.parent !== anchor.list) row = parent(row);
+    const row = childOf(box, anchor.list);
+    if (!row || !list) return;
     const pos = row && list ? list.children.indexOf(row.id) : -1;
     const startsGroup = n => contains(n, c => /^message\.(?:author|avatar|reply):|^reply-preview/.test(c.accessibilityId || ""), 5);
     const messageRow = n => contains(n, c => /^message\.content:\d+$/.test(c.accessibilityId || ""), 5);
@@ -1307,9 +1236,6 @@
       body: dark ? mix(palette.canvas, palette.row, 0.48) : palette.row,
       bubble: dark ? mix(palette.row, palette.accent, 0.055) : mix(palette.canvas, palette.accent, 0.045),
     };
-    if (releaseChrome) releaseChrome();
-    if (appearance && typeof appearance.setChromeColors === "function")
-      releaseChrome = appearance.setChromeColors(palette.accent, palette.onAccent, conversation.header);
     applyNativePalette(true);
     for (const remove of rules) remove();
     rules = [];
@@ -1324,11 +1250,7 @@
     patch({ prefix: "message.author:" }, { fontWeight: 700 });
     patch({ prefix: "message.timestamp:" }, { color: palette.muted });
     for (const name of [...headerNames, "guild-header-row"]) patch(name, { ...flat, background: conversation.header });
-    for (const name of paneChrome) patch(name, { ...plainSurface, background: conversation.header });
-    for (const name of dockFrames) patch(name, { ...plainSurface, background: conversation.body });
-    patch("main-frame-gradient", plainSurface);
-    patch("main-tabs-frame-border", plainSurface);
-    patch("composer-floating", { ...flat, background: conversation.body });
+    patch("composer-floating", { ...flat, gradient: null });
     for (const name of headerNames) forLive(name, paintTopInset);
     forLive("guild.menu", styleGuildHeader);
     patch("guard-gradient", { ...clearFill, gradient: null, opacity: 0 });
@@ -1341,7 +1263,7 @@
     forLive(menuMatch, styleMenu);
     forLive({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
     for (const match of sidebarMatches) forLive(match, styleSidebar);
-    for (const key of dockSlots) forLive(key, n => paintUserDock(n, true));
+    for (const key of dockSlots) forLive(key, paintUserDock);
     forLive("delete-message", maybeDialog);
     forLive({ prefix: "alert-title:" }, maybeDialog);
     forLive({ prefix: "embed:" }, styleNamedEmbed);
@@ -1370,20 +1292,17 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.7.1", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.7.2", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
   function styleGuildHeader(node) {
-    let n = node;
-    for (let i = 0; i < 5 && shellNode(n); i++, n = parent(n)) {
-      if (n.list != null || n.sheet != null || contains(n, c => sidebarRow(c) || c.kind === "list" || c.kind === "scroll", 2)) break;
-      paintTopInset(n);
-      headerEdge(n);
-      if (n.children.length > 1 && i > 0) break;
+    applyNativePalette();
+    for (let i = 0; node && i < 5; i++, node = parent(node)) {
+      if (node.accessibilityId === "guild-header-row") { paintTopInset(node); return; }
     }
   }
-  for (const slot of dockSlots) watch(slot, n => paintUserDock(n, true));
+  for (const slot of dockSlots) watch(slot, paintUserDock);
   watch("guild.menu", head => {
     styleGuildHeader(head);
     forLive({ prefix: "navigation.channel:" }, n => {
@@ -1506,7 +1425,6 @@
   phoenix.onUnload(() => {
     // Omitting the optional background clears the host's cached startup
     // color. Discord supplies its current native palette on the next launch.
-    if (releaseChrome) releaseChrome();
     if (nativeScheme && phoenix.bridge) phoenix.bridge.invoke(9, 84, { [hostTheme.dark]: activeDark });
     finishDialogWatch();
     removeSkins(true);
