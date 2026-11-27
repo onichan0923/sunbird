@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#fbf5f5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#21181b" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="data:,">
+<title>Sunbird · Android 修補器</title>
+<link rel="stylesheet" href="./style.css">
+<script type="module" src="./app.js"></script>
+</head>
+<body>
+<header><div class="wrap nav"><span class="brand">Sunbird</span><a href="https://github.com/onichan0923/sunbird/tree/android-system-appearance">GitHub ↗</a></div></header>
+<main class="wrap">
+<h1>Android 修補器</h1>
+<p class="intro">在瀏覽器產生含系統深淺模式與莫奈取色的 Discord APK。檔案在你的裝置上處理。</p>
+<form id="form">
+<fieldset id="controls">
+<section><h2>Discord 版本</h2><div class="panel">
+<div class="segment"><label><input type="radio" name="source" value="remote" checked><span>自動下載</span></label><label><input type="radio" name="source" value="files"><span>使用本機 APK</span></label></div>
+<div class="grid">
+<label>版本<select id="version"><option>357200</option><option>356207</option></select></label>
+<label>架構<select id="abi"><option value="arm64">ARM64 · 64 位元</option><option value="armv7">ARMv7 · 32 位元</option></select></label>
+<label>螢幕密度<select id="density"></select></label><label>語言<select id="language"><option value="">不加入語言包</option></select></label>
+</div>
+<div id="manual" class="manual" hidden><label>選擇同一版本的 APK 分包<input id="apks" type="file" multiple accept=".apk"></label><p>需要 base、架構及螢幕密度分包，語言包可選。缺少的檔案可逐一下載。</p><div id="split-links" class="links"></div></div>
+</div></section>
+<section><h2>安裝方式</h2><div class="panel">
+<label>應用程式<select id="mode"><option value="side">與現有 Discord 並存</option><option value="replace">使用 com.discord 套件名稱</option></select></label>
+<div class="grid extra"><label id="package-label">套件名稱<input id="package" value="com.discord.phoenix" spellcheck="false" autocapitalize="none"></label><label>顯示名稱<input id="label" maxlength="50" placeholder="Discord Phoenix" autocomplete="off"></label></div>
+</div></section>
+<section><h2>插件</h2><div class="panel"><label class="check"><input id="theme" type="checkbox" checked><span><strong>M3E 主題</strong><small>0.6.0 · 跟隨系統外觀，Android 12 以上支援莫奈取色</small></span></label>
+<details><summary>加入其他 Sunbird 插件</summary><label class="extra">選擇 JS 檔案<input id="plugins" type="file" multiple accept=".js"></label></details></div></section>
+<button class="primary" type="submit">修補 APK</button>
+</fieldset>
+</form>
+<section id="output" hidden aria-live="polite"><h2>修補進度</h2><div class="panel"><div id="status"></div><progress id="progress"></progress><button type="button" id="fallback" hidden>改用本機 APK</button><a class="primary" id="save" hidden>下載 APK</a></div></section>
+<noscript>請開啟 JavaScript 以使用瀏覽器修補器。</noscript>
+</main>
+<footer class="wrap"><a href="https://sunbird.tools/">Sunbird 原版網頁 ↗</a><a href="./credits.txt">原始碼與版本</a></footer>
+</body></html>
