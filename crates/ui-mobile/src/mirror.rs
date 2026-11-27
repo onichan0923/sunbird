@@ -35,6 +35,10 @@ const GRADIENTS: [Prop; 5] = [
 #[derive(Clone, Debug, Default)]
 pub struct Surface {
    pub kind:       &'static str,
+   pub role:       Option<&'static str>,
+   pub selected:   Option<bool>,
+   pub disabled:   bool,
+   pub link_ink:   bool,
    pub height:     Option<f64>,
    pub opaque:     bool,
    pub backplate:  bool,
@@ -45,6 +49,22 @@ pub struct Surface {
    fills:          [Option<u32>; 2],
    pub padding:    Option<[f32; 4]>,
    pub margin:     Option<[f32; 4]>,
+}
+
+fn control_role(value: &Value) -> Option<&'static str> {
+   [
+      "switch",
+      "radio",
+      "radiogroup",
+      "tab",
+      "tablist",
+      "button",
+      "link",
+      "header",
+      "checkbox",
+   ]
+   .into_iter()
+   .find(|r| value.as_str() == Some(*r))
 }
 
 impl Surface {
@@ -75,6 +95,22 @@ impl Surface {
    fn update(&mut self, props: &Props) {
       for (key, value) in props {
          match *key {
+            Prop::ROLE => {
+               // Export only control roles understood by the theme, never
+               // labels.
+               self.role = control_role(value);
+            },
+            p if p == crate::prop!("accessibilitySelected") => {
+               self.selected = if let Value::Bool(v) = value {
+                  Some(*v)
+               } else {
+                  None
+               }
+            },
+            p if p == crate::prop!("accessibilityDisabled") => {
+               self.disabled = *value == Value::Bool(true);
+            },
+            Prop::COLOR => self.link_ink = crate::accent::link_ink(value),
             BACKGROUND | BG => {
                let color = match value {
                   Value::I32(n) => Some(n.cast_unsigned()),
@@ -246,6 +282,8 @@ impl Mirror {
             ViewKind::List => "list",
             ViewKind::Image => "image",
             ViewKind::Text => "text",
+            ViewKind::Markup => "markup",
+            ViewKind::Ring => "ring",
             _ => "other",
          },
          ..Surface::default()

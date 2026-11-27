@@ -201,6 +201,14 @@ pub struct Worklet {
    channels: Vec<(Channel, bool)>,
 }
 
+pub(crate) fn channel_table(words: &[i32]) -> Option<&[[i32; ENTRY]]> {
+   if words.first() != Some(&MAGIC) {
+      return None;
+   }
+   let count = usize::try_from(*words.get(1)?).ok()?;
+   words.get(HEADER..)?.as_chunks::<ENTRY>().0.get(..count)
+}
+
 impl TryFrom<Vec<i32>> for Worklet {
    type Error = WorkletError;
 
@@ -208,16 +216,8 @@ impl TryFrom<Vec<i32>> for Worklet {
       if words.first() != Some(&MAGIC) {
          return Err(WorkletError::Magic);
       }
-      let count = words
-         .get(1)
-         .and_then(|count| usize::try_from(*count).ok())
-         .ok_or(WorkletError::Truncated)?;
-      if words.len() < HEADER + count * ENTRY {
-         return Err(WorkletError::Truncated);
-      }
-      let channels = words[HEADER..HEADER + count * ENTRY]
-         .as_chunks::<ENTRY>()
-         .0
+      let channels = channel_table(&words)
+         .ok_or(WorkletError::Truncated)?
          .iter()
          .map(|entry| Ok((Channel::try_from(entry[0])?, entry[1] != 0)))
          .collect::<Result<_, WorkletError>>()?;

@@ -689,6 +689,15 @@ impl Patches {
    }
 }
 
+pub fn system_font_root(owner: &str, id: i32) {
+   let mut state = patches();
+   let changed = state.mirror.surface(id).is_some() && state.accents.font_root(owner, id);
+   drop(state);
+   if changed {
+      queue(Job::RefreshAccents);
+   }
+}
+
 pub fn set_accents(owner: &str, palette: phoenix_ui_mobile::accent::Palette) {
    ACTIVE.store(true, Ordering::Release);
    if patches().accents.set(owner, Some(palette)) {

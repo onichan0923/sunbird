@@ -146,14 +146,22 @@ pub fn node_created(engine: &Engine, watcher_ids: &[u64], info: &NodeInfo) {
 fn add_palette_hook<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickjs::Result<()> {
    let owner = plugin.to_owned();
    ui.set(
+      "useSystemFontIn",
+      Function::new(ctx.clone(), move |id: i32| {
+         patches::system_font_root(&owner, id);
+      })?,
+   )?;
+   let owner = plugin.to_owned();
+   ui.set(
       "setAccentPalette",
       Function::new(
          ctx.clone(),
-         move |primary: u32, on_primary: u32, container: u32| {
+         move |primary: u32, on_primary: u32, container: u32, link_font: Opt<bool>| {
             patches::set_accents(&owner, phoenix_ui_mobile::accent::Palette {
                primary,
                on_primary,
                container,
+               system_links: link_font.0.unwrap_or(false),
             });
          },
       )?,
@@ -198,13 +206,18 @@ pub fn add_view_hooks<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rq
          },
       )?,
    )?;
-   let owner = plugin.to_owned();
-   ui.set(
-      "onChecked",
-      Function::new(ctx.clone(), move |ctx: Ctx<'js>, handler: Function<'js>| {
-         on_node_created(&ctx, &owner, NodeMatch::Checked, handler)
-      })?,
-   )?;
+   for (name, matcher) in [
+      ("onChecked", NodeMatch::Checked),
+      ("onSelected", NodeMatch::Selected),
+   ] {
+      let owner = plugin.to_owned();
+      ui.set(
+         name,
+         Function::new(ctx.clone(), move |ctx: Ctx<'js>, handler: Function<'js>| {
+            on_node_created(&ctx, &owner, matcher.clone(), handler)
+         })?,
+      )?;
+   }
    let owner = plugin.to_owned();
    ui.set(
       "onNode",
@@ -334,6 +347,9 @@ pub fn add_view_queries<'js>(ctx: &Ctx<'js>, ui: &Object<'js>) -> rquickjs::Resu
             };
             let obj = Object::new(ctx)?;
             obj.set("kind", surface.kind)?;
+            obj.set("role", surface.role)?;
+            obj.set("selected", surface.selected)?;
+            obj.set("disabled", surface.disabled)?;
             obj.set("height", surface.height)?;
             obj.set("opaque", surface.opaque)?;
             obj.set("backplate", surface.backplate)?;

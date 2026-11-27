@@ -1446,6 +1446,8 @@ declare namespace Phoenix {
     onNode(match: NodeMatch, handler: (node: NodeInfo) => void): Remover;
     /// Observes original accessibilityChecked writes, including creation and removal.
     onChecked(handler: (node: NodeInfo) => void): Remover;
+    /// Fires on native accessibilitySelected changes, including anonymous tabs and radios.
+    onSelected?(handler: (node: NodeInfo) => void): Remover;
     /// Declaratively patches props synchronously inside Rust's UI batch rewriter (zero JS
     /// overhead per frame). Use `addOn` to append event names to `on` without clobbering Phoenix's
     /// existing listeners.
@@ -1463,10 +1465,15 @@ declare namespace Phoenix {
     /// Reads live tree metadata for `id` from Phoenix's mirrored view tree.
     node(id: number): NodeInfo | null;
     /// Remaps resolved Discord UI brand and link colors. Colors are ARGB. Removed on plugin unload.
-    setAccentPalette?(primary: number, onPrimary: number, container: number): void;
+    setAccentPalette?(primary: number, onPrimary: number, container: number, systemLinkFont?: boolean): void;
+    /// Use the platform sans-serif for text and rich runs under this mounted node.
+    useSystemFontIn?(id: number): void;
     /// Original host surface facts, available without debug capture.
     surface(id: number): Readonly<{
-      kind: "view" | "stack" | "list" | "scroll" | "image" | "text" | "other";
+      kind: "view" | "stack" | "list" | "scroll" | "image" | "text" | "markup" | "ring" | "other";
+      role?: string | null;
+      selected?: boolean | null;
+      disabled?: boolean;
       height: number | null;
       opaque: boolean;
       backplate: boolean;

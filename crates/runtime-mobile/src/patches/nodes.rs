@@ -26,12 +26,13 @@ pub enum NodeMatch {
    Exact(String),
    Prefix(String),
    Checked,
+   Selected,
 }
 
 impl NodeMatch {
    pub fn matches(&self, aid: &str) -> bool {
       match self {
-         Self::Checked => false,
+         Self::Checked | Self::Selected => false,
          Self::Exact(expected) => aid == expected,
          Self::Prefix(prefix) => aid.starts_with(prefix.as_str()),
       }
@@ -97,17 +98,22 @@ pub fn surface(id: i32) -> Option<phoenix_ui_mobile::mirror::Surface> {
 
 impl Patches {
    pub fn notify_checked(&self, ops: &[Op]) {
-      if !self
-         .node_watchers
-         .iter()
-         .any(|w| w.matcher == NodeMatch::Checked)
-      {
+      self.notify_control_state(ops, &NodeMatch::Checked, Prop::ACCESSIBILITY_CHECKED);
+      self.notify_control_state(
+         ops,
+         &NodeMatch::Selected,
+         phoenix_ui_mobile::prop!("accessibilitySelected"),
+      );
+   }
+
+   fn notify_control_state(&self, ops: &[Op], matcher: &NodeMatch, prop: Prop) {
+      if !self.node_watchers.iter().any(|w| &w.matcher == matcher) {
          return;
       }
       let mut seen = std::collections::BTreeSet::new();
       for op in ops {
          if let Op::Create { id, props, .. } | Op::Update { id, props } = op
-            && get_prop(props, Prop::ACCESSIBILITY_CHECKED).is_some()
+            && get_prop(props, prop).is_some()
             && self.mirror.exists(*id)
          {
             seen.insert(*id);
@@ -118,7 +124,7 @@ impl Patches {
             watchers: self
                .node_watchers
                .iter()
-               .filter(|w| w.matcher == NodeMatch::Checked)
+               .filter(|w| &w.matcher == matcher)
                .map(|w| w.id)
                .collect(),
             info:     self.build_node_info(id),
