@@ -216,7 +216,7 @@ impl Sink for PatchSink {
 impl Patches {
    /// Mirrors `ops` and splices plugin nodes in. `None` leaves the batch as
    /// it was.
-   fn rewrite(&mut self, ops: Vec<Op>, restored: bool) -> Option<Vec<Op>> {
+   fn rewrite(&mut self, mut ops: Vec<Op>, restored: bool) -> Option<Vec<Op>> {
       let mut mine = Vec::new();
       let mut touched = HashSet::new();
       let mut patch_ops: HashMap<i32, (Props, Vec<String>)> = HashMap::new();
@@ -264,6 +264,7 @@ impl Patches {
          self.suggest(&mut extra);
       }
 
+      let repainted = self.accents.rewrite(&mut ops, &self.mirror);
       let hidden_ops = self.reconcile_hidden();
       let slot_parents = self
          .slots
@@ -277,6 +278,7 @@ impl Patches {
          && patch_ops.is_empty()
          && list_updates.is_empty()
          && !restored
+         && !repainted
          && !self.rewrites(&ops, &slot_parents)
       {
          return None;

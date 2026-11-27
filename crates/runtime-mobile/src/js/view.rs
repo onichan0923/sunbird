@@ -143,7 +143,25 @@ pub fn node_created(engine: &Engine, watcher_ids: &[u64], info: &NodeInfo) {
    });
 }
 
+fn add_palette_hook<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickjs::Result<()> {
+   let owner = plugin.to_owned();
+   ui.set(
+      "setAccentPalette",
+      Function::new(
+         ctx.clone(),
+         move |primary: u32, on_primary: u32, container: u32| {
+            patches::set_accents(&owner, phoenix_ui_mobile::accent::Palette {
+               primary,
+               on_primary,
+               container,
+            });
+         },
+      )?,
+   )
+}
+
 pub fn add_view_hooks<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickjs::Result<()> {
+   add_palette_hook(ctx, plugin, ui)?;
    let owner = plugin.to_owned();
    ui.set(
       "hide",
@@ -330,6 +348,7 @@ pub fn add_view_queries<'js>(ctx: &Ctx<'js>, ui: &Object<'js>) -> rquickjs::Resu
             if let Some(edges) = surface.margin {
                obj.set("margin", edges.to_vec())?;
             }
+            obj.set("brandFill", surface.brand_fill())?;
             obj.set("fill", surface.fill().map(f64::from))?;
             obj.set("gradient", surface.gradient())?;
             Ok(obj.into_value())

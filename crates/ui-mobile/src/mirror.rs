@@ -63,6 +63,15 @@ impl Surface {
          .find(|color| color >> 24 == 255)
    }
 
+   #[must_use]
+   pub fn brand_fill(&self) -> bool {
+      self
+         .fills
+         .iter()
+         .flatten()
+         .any(|color| crate::accent::brand_fill(*color))
+   }
+
    fn update(&mut self, props: &Props) {
       for (key, value) in props {
          match *key {
@@ -198,6 +207,7 @@ impl Mirror {
                self.create(*id, kind, props, capture);
             },
             Op::Children { id, ids } => {
+               self.detach_children(*id);
                for kid in ids {
                   self.parent.insert(*kid, *id);
                }
@@ -205,7 +215,7 @@ impl Mirror {
             },
             Op::ChildEdits { id, edits } => {
                let old = self.kids.remove(id).unwrap_or_default();
-               let new = apply_edits(&old, edits);
+               let new = apply_edits(&old, edits, |child| self.detach(*id, child));
                for kid in edits.iter().flat_map(|edit| &edit.ins) {
                   self.parent.insert(*kid, *id);
                }
@@ -335,11 +345,27 @@ impl Mirror {
       self.ids.insert(id, aid.to_owned());
    }
 
+   fn detach(&mut self, parent: i32, child: i32) {
+      // Child edits for the old parent can arrive after attachment to a new
+      // row.
+      if self.parent.get(&child) == Some(&parent) {
+         self.parent.remove(&child);
+      }
+   }
+
+   fn detach_children(&mut self, parent: i32) {
+      if let Some(kids) = self.kids.remove(&parent) {
+         for child in kids {
+            self.detach(parent, child);
+         }
+      }
+   }
+
    fn delete(&mut self, id: i32) {
       if self.root == Some(id) {
          self.root = None;
       }
-      self.kids.remove(&id);
+      self.detach_children(id);
       self.parent.remove(&id);
       self.ids.remove(&id);
       self.checked.remove(&id);
@@ -556,14 +582,19 @@ impl Mirror {
    }
 }
 
-fn apply_edits(old: &[i32], edits: &[ChildEdit]) -> Vec<i32> {
+fn apply_edits(old: &[i32], edits: &[ChildEdit], mut detach: impl FnMut(i32)) -> Vec<i32> {
    let mut out = Vec::with_capacity(old.len());
    let mut at = 0;
    for edit in edits {
       let keep = usize::try_from(edit.keep).unwrap_or_default();
       let del = usize::try_from(edit.del).unwrap_or_default();
       out.extend(old.iter().skip(at).take(keep));
-      at = (at + keep + del).min(old.len());
+      at = at.saturating_add(keep).min(old.len());
+      let end = at.saturating_add(del).min(old.len());
+      for &child in &old[at..end] {
+         detach(child);
+      }
+      at = end;
       out.extend_from_slice(&edit.ins);
    }
    out.extend(old.iter().skip(at));
@@ -672,6 +703,32 @@ mod tests {
    }
 
    #[test]
+   fn reparented_message_keeps_only_its_current_row() {
+      let mut m = Mirror::default();
+      m.apply(
+         &[
+            Op::Children {
+               id:  1,
+               ids: vec![7, 8],
+            },
+            Op::Children {
+               id:  2,
+               ids: vec![7],
+            },
+            Op::Children {
+               id:  1,
+               ids: vec![],
+            },
+         ],
+         false,
+      );
+      assert_eq!(m.parent(7), Some(2));
+      assert_eq!(m.parent(8), None);
+      m.apply(&[Op::Delete { ids: vec![2] }], false);
+      assert_eq!(m.parent(7), None);
+   }
+
+   #[test]
    fn tracks_root_children_edits_and_deletes() {
       let mut mirror = Mirror::default();
       let batch = [
@@ -723,6 +780,7 @@ mod tests {
          true,
       );
       assert_eq!(mirror.kids(1), &[2, 4]);
+      assert_eq!(mirror.parent(3), None);
       assert_eq!(mirror.composer(), Some((2, "draft")));
 
       let dump = serde_json::to_value(TreeJson::new(&mirror, 1, 3)).expect("tree serializes");

@@ -27,6 +27,7 @@ use serde::{
 
 use crate::motion::Worklet;
 
+pub mod accent;
 pub mod inspect;
 pub mod mirror;
 pub mod motion;

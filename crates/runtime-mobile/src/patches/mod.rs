@@ -377,6 +377,7 @@ struct Slot {
 
 #[derive(Default)]
 struct Patches {
+   accents:                phoenix_ui_mobile::accent::Accents,
    mirror:                 Mirror,
    templates:              Templates,
    seen:                   Seen,
@@ -682,9 +683,23 @@ pub fn set_emoji_pickers(count: usize) {
    emoji::unlock(count > 0);
 }
 
+impl Patches {
+   fn refresh_accents(&mut self) -> Vec<Op> {
+      self.accents.refresh(&self.mirror)
+   }
+}
+
+pub fn set_accents(owner: &str, palette: phoenix_ui_mobile::accent::Palette) {
+   ACTIVE.store(true, Ordering::Release);
+   if patches().accents.set(owner, Some(palette)) {
+      queue(Job::RefreshAccents);
+   }
+}
+
 /// Drops everything `plugin` added.
 pub fn forget(plugin: &str) {
    let mut state = patches();
+   let accent_changed = state.accents.set(plugin, None);
    let targets = state
       .contributions
       .iter()
@@ -735,6 +750,9 @@ pub fn forget(plugin: &str) {
       .any(|patch| patch.plugin == plugin && patch.target == PatchTarget::List);
    state.prop_rules.retain(|patch| patch.plugin != plugin);
    drop(state);
+   if accent_changed {
+      queue(Job::RefreshAccents);
+   }
    if !unhidden.is_empty() {
       queue(Job::RefreshHidden);
    }

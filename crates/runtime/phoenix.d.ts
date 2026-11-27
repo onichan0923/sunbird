@@ -1462,6 +1462,8 @@ declare namespace Phoenix {
     findDown(root: number, match: NodeMatch, maxDepth?: number): number | null;
     /// Reads live tree metadata for `id` from Phoenix's mirrored view tree.
     node(id: number): NodeInfo | null;
+    /// Remaps resolved Discord UI brand and link colors. Colors are ARGB. Removed on plugin unload.
+    setAccentPalette?(primary: number, onPrimary: number, container: number): void;
     /// Original host surface facts, available without debug capture.
     surface(id: number): Readonly<{
       kind: "view" | "stack" | "list" | "scroll" | "image" | "text" | "other";
@@ -1473,6 +1475,7 @@ declare namespace Phoenix {
       padding?: [number, number, number, number];
       margin?: [number, number, number, number];
       fill: number | null;
+      brandFill?: boolean;
       pressable: boolean;
       horizontal: boolean;
       gradient: boolean;
