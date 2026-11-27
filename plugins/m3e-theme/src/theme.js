@@ -2224,8 +2224,8 @@ if (phoenix.appearance) (() => {
     }
   }
 
-  // The Android client also places two or four attachments directly in a
-  // FrameLayout. Each has its own passive shell, press target and drawable.
+  // The Android client also places attachments directly in a FrameLayout.
+  // Each has its own passive shell, press target and drawable.
   function stackedAlbum(root) {
     let group = root;
     const wrappers = [];
@@ -2233,7 +2233,7 @@ if (phoenix.appearance) (() => {
       wrappers.push(group);
       group = ui.node(group.children[0]);
     }
-    if (kindOf(group) !== "stack" || ![2, 4].includes(group.children.length)) return null;
+    if (kindOf(group) !== "stack" || group.children.length < 2 || group.children.length > 10) return null;
     const tiles = [];
     for (const shell of children(group)) {
       if (kindOf(shell) !== "stack" || interactive(shell) || shell.children.length !== 1) return null;
@@ -2245,8 +2245,15 @@ if (phoenix.appearance) (() => {
     return { wrappers, group, tiles };
   }
 
+  // Recycled image views can still carry a single preview's height limit.
+  const galleryImage = { scale: "cover", minWidth: 0, minHeight: 0, maxWidth: null, maxHeight: null };
+
   function fitStackedAlbum(album, width) {
     const { wrappers, group, tiles } = album;
+    for (const { image } of tiles) ui.update(image.id, { ...galleryImage, width: "fill", height: "fill" });
+    // Other contact sheets can have a lead photo spanning several cells.
+    // Keep the client's positions and hit targets for those arrangements.
+    if (tiles.length !== 2 && tiles.length !== 4) return;
     const frame = { width: width || "fill", minWidth: 0 };
     for (const n of wrappers) ui.update(n.id, frame);
     const gap = 4;
@@ -2259,13 +2266,13 @@ if (phoenix.appearance) (() => {
       if (top && bottom) frame.minHeight = top + gap + bottom;
     }
     ui.update(group.id, frame);
-    tiles.forEach(({ shell, hit, image }, i) => {
+    tiles.forEach(({ shell, hit }, i) => {
       const right = i % 2 === 1, bottom = i >= 2;
       const size = width ? { width: (width - gap) / 2, maxWidth: null, padding: 0 } :
         { width: "50%", maxWidth: null, padding: [right ? gap / 2 : 0, 0, right ? 0 : gap / 2, 0] };
       ui.update(shell.id, { ...size, absolute: false, minWidth: 0, margin: 0, translateX: 0, translateY: 0,
         gravity: (bottom ? "bottom" : "top") + (right ? "|end" : "|start") });
-      for (const n of [hit, image]) ui.update(n.id, { width: "fill", minWidth: 0, maxWidth: null });
+      ui.update(hit.id, { width: "fill", minWidth: 0, maxWidth: null });
     });
   }
 
@@ -2281,7 +2288,7 @@ if (phoenix.appearance) (() => {
       if (shape?.height > 0 && shape.height <= 40) return null;
       const namedMedia = /^(?:attachment|message[.]attachments?|mosaic|embed-gallery|gallery)(?:[:._-]|$)/i.test(name);
       const sized = mediaSlot || shape?.height > 40 || namedMedia;
-      if (kind === "image") return { id: node.id, cells: [], sized };
+      if (kind === "image") return { id: node.id, cells: [], sized, image: true };
       // Zoom and player surfaces may own the drawable. A named attachment or
       // an explicitly tall surface distinguishes these from inline icons.
       if (!node.children.length) return sized && ["other", "zoom", "video", "player"].includes(kind) ?
@@ -2315,8 +2322,40 @@ if (phoenix.appearance) (() => {
   }
 
   function sizeGallery(layout, weighted = false) {
-    ui.update(layout.id, weighted ? { width: 0, flex: 1, minWidth: 0 } : { width: "fill", minWidth: 0 });
+    const size = weighted ? { width: 0, flex: 1, minWidth: 0 } : { width: "fill", minWidth: 0 };
+    ui.update(layout.id, layout.image ? { ...galleryImage, ...size } : size);
     for (const cell of layout.cells) sizeGallery(cell, layout.row);
+  }
+
+  // An uploaded photo can have several fixed-width frames between its drawable
+  // and the bubble. Bound each one, including the press target. A portrait
+  // whose native frame already fits keeps its own width and preview height.
+  function singlePhoto(root) {
+    const shells = [];
+    let node = root;
+    while (node && shells.length < 10) {
+      const name = node.accessibilityId || "";
+      if (name && !/^(?:message\.attachments?[:.]|attachment|media|image)/i.test(name)) return null;
+      if (kindOf(node) === "image") break;
+      if (!shellNode(node) || node.children.length !== 1) return null;
+      shells.push(node);
+      node = ui.node(node.children[0]);
+    }
+    if (kindOf(node) !== "image") return null;
+    if (![...shells, node].some(n => n.accessibilityId || original(n)?.height > 40) &&
+        !shells.some(n => kindOf(n) === "stack" && interactive(n))) return null;
+    return { shells, image: node };
+  }
+
+  function fitSinglePhoto({ shells, image }, width) {
+    const height = [image, ...shells.slice().reverse()].map(n => original(n)?.height).find(h => h > 0);
+    const bounds = { width: "wrap", maxWidth: width || null };
+    for (const shell of shells) ui.update(shell.id, { ...bounds, minWidth: 0, ...(height && { height: "wrap" }) });
+    // A fixed LayoutParams.width wins over Android's maxWidth. Let ImageView
+    // measure the bitmap inside the padded column, including in the pressable
+    // stack. Keep a nonempty download target before the drawable arrives.
+    ui.update(image.id, { ...bounds, ...(height && { height }), maxHeight: height ?? null, minHeight: height ? 0 : 1,
+      minWidth: Math.min(height || 32, width || Infinity), scale: "fit" });
   }
 
   // A photo in 357200 can be an anonymous child after the text marker.
@@ -2324,7 +2363,7 @@ if (phoenix.appearance) (() => {
   function messageMedia(node) {
     const name = node.accessibilityId || "";
     if (/^(?:embed:|attachment[.:]|message\.attachments?:)/.test(name)) return true;
-    if (stackedAlbum(node) || galleryLayout(node)) return true;
+    if (singlePhoto(node) || stackedAlbum(node) || galleryLayout(node)) return true;
     if (name || original(node)?.horizontal) return false;
     let part = node;
     for (let depth = 0; part && depth < 8; depth++) {
@@ -2354,6 +2393,7 @@ if (phoenix.appearance) (() => {
     const gallery = galleryLayout(node);
     if (gallery) {
       sizeGallery(gallery);
+      if (context.width) ui.update(node.id, { width: context.width, maxWidth: context.width });
       return "gallery";
     }
     const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
@@ -2412,13 +2452,15 @@ if (phoenix.appearance) (() => {
   }
 
   const bubbles = new Map();
-  const albumWidths = new Map();
+  const mediaWidths = new Map();
 
-  function constrainAlbum(owner, width) {
+  function constrainMedia(owner, width) {
     if (!(width > 0) || !Number.isFinite(width)) return;
     for (const id of owner.parts) {
       const item = ui.node(id);
       if (item?.parent !== owner.box) continue;
+      const photo = singlePhoto(item);
+      if (photo) { fitSinglePhoto(photo, width); continue; }
       const stack = stackedAlbum(item);
       if (stack) fitStackedAlbum(stack, width);
       else ui.update(id, { width, maxWidth: width, minWidth: 0 });
@@ -2531,7 +2573,7 @@ if (phoenix.appearance) (() => {
 
   function releaseBubble(boxId) {
     const owner = bubbles.get(boxId);
-    if (albumWidths.get(owner?.marker)?.box === boxId) albumWidths.delete(owner.marker);
+    if (mediaWidths.get(owner?.marker)?.box === boxId) mediaWidths.delete(owner.marker);
     const active = rowBoxes.get(owner?.row);
     if (active === boxId) rowBoxes.delete(owner.row);
     restoreRowWash(owner?.paints, active === boxId ? null : bubbles.get(active)?.paints);
@@ -2638,14 +2680,16 @@ if (phoenix.appearance) (() => {
       }
     }
     let fitted = false;
-    const albums = [];
-    const prior = albumWidths.get(marker.id);
+    const measuredParts = [];
+    const prior = mediaWidths.get(marker.id);
     const width = prior?.box === box.id && prior.name === marker.accessibilityId ? prior.width : null;
     for (const part of parts.slice(body ? box.children.indexOf(body.id) : 0)) {
       if (part.id === body?.id && marker.id !== anchor.id) continue;
-      const result = fitMediaBranch(part, 0, { skip: cardIds, width });
+      const single = box.id !== marker.id && part.id !== marker.id && !cardIds.has(part.id) && singlePhoto(part);
+      if (single) fitSinglePhoto(single, width);
+      const result = single ? "photo" : fitMediaBranch(part, 0, { skip: cardIds, width });
       if (result) fitted = true;
-      if (result === "gallery" && part.id !== marker.id) albums.push(part.id);
+      if ((single || result === "gallery") && part.id !== marker.id) measuredParts.push(part.id);
     }
     const media = fitted || hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
     for (const [oldBox, owner] of bubbles) {
@@ -2659,14 +2703,13 @@ if (phoenix.appearance) (() => {
     rowBoxes.set(row.id, box.id);
     ui.update(box.id, { background: replyBase,
       radius: 16, clip: media || tint != null, padding: [10, 5, 10, media ? 10 : 5] });
-    // A fixed native gallery may be wider than a wrap-content ancestor.
+    // A fixed native preview may be wider than a wrap-content ancestor.
     // Its full-width caption is measured inside the same padded message box.
-    if (albums.length && marker.parent === box.id && marker.accessibilityId.startsWith(messageMatch.prefix)) {
-      const owner = { box: box.id, name: marker.accessibilityId, parts: albums, width };
-      albumWidths.set(marker.id, owner);
+    if (measuredParts.length && marker.parent === box.id && marker.accessibilityId.startsWith(messageMatch.prefix)) {
+      const owner = { box: box.id, name: marker.accessibilityId, parts: measuredParts, width };
+      mediaWidths.set(marker.id, owner);
       ui.update(marker.id, { width: "fill" });
-      constrainAlbum(owner, width);
-    } else albumWidths.delete(marker.id);
+    } else mediaWidths.delete(marker.id);
     paintReplyRow(row, box, id);
     refreshJoins(list, row.id);
   }
@@ -3183,7 +3226,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.14", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.15", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -3322,12 +3365,12 @@ if (phoenix.appearance) (() => {
       }
       return;
     }
-    const owner = albumWidths.get(e.node);
+    const owner = mediaWidths.get(e.node);
     if (!owner || e.accessibilityId !== owner.name || ui.node(e.node)?.parent !== owner.box) return;
     const width = e.payload?.width;
     if (width > 0 && Number.isFinite(width) && owner.width !== width) {
       owner.width = width;
-      constrainAlbum(owner, width);
+      constrainMedia(owner, width);
     }
   }));
   watchers.push(ui.onEvent("rowSwipe", e => {
