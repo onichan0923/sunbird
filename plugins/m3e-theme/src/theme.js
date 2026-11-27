@@ -1330,6 +1330,12 @@ if (phoenix.appearance) (() => {
       }
       if (Object.keys(props).length) edits.set(n.id, props);
     }
+    if (path.length) {
+      const first = path[0], props = edits.get(first.id) || {};
+      const [left, top, right, bottom] = props.margin || original(first)?.margin || [0, 0, 0, 0];
+      props.margin = [left, top + 2, right, bottom];
+      edits.set(first.id, props);
+    }
     const previous = categoryInsets.get(list.id);
     if (previous) {
       for (const [id, keys] of previous) {
@@ -1913,11 +1919,51 @@ if (phoenix.appearance) (() => {
     }
   }
 
+  // Recognize attachment rows before styling any tile. Text, file cards and
+  // chat controls can also appear in horizontal groups beside small icons.
+  function galleryLayout(root) {
+    if (!root?.children.length) return null;
+    let budget = 72;
+    function read(node, depth, mediaSlot) {
+      if (!node || depth > 8 || --budget < 0) return null;
+      const shape = original(node), kind = node.kind || shape?.kind, name = node.accessibilityId || "";
+      if (name && !/^(?:message\.attachments?|attachment|media|image|mosaic|embed-gallery|gallery|embed)(?:[:._-]|$)/i.test(name)) return null;
+      if (/emoji|avatar|icon|badge|footer|author|reaction/i.test(name) || (shape?.height != null && shape.height <= 40)) return null;
+      const sized = mediaSlot || shape?.height > 40 || /^(?:attachment|message\.attachments?|mosaic|embed-gallery|gallery)/i.test(name);
+      if (kind === "image") return sized ? { id: node.id, cells: [] } : null;
+      if ((kind !== "view" && kind !== "stack") || !node.children.length || node.children.length > 10) return null;
+
+      const row = kind === "view" && shape?.horizontal;
+      const cells = [];
+      for (const child of children(node)) {
+        // Some albums use a passive spacer between photos instead of a gap.
+        if (row && !child.accessibilityId && kindOf(child) === "view" && !child.children.length && !interactive(child)) continue;
+        const cell = read(child, depth + 1, sized);
+        if (cell) cells.push(cell);
+        else if (kind !== "stack") return null;
+      }
+      // An overlay stack is one tile. Its play or spoiler controls keep their
+      // own bounds; only the image-bearing branch follows the tile's width.
+      if (!cells.length) return null;
+      if (kind === "stack" && cells.length > 1 &&
+          !(interactive(node) || /^attachment[.:]/i.test(name))) return null;
+      return { id: node.id, cells, row, gallery: (row && cells.length > 1) || cells.some(c => c.gallery) };
+    }
+    const layout = read(root, 0, false);
+    return layout?.gallery ? layout : null;
+  }
+
+  function sizeGallery(layout, weighted = false) {
+    ui.update(layout.id, weighted ? { width: 0, flex: 1, minWidth: 0 } : { width: "fill", minWidth: 0 });
+    for (const cell of layout.cells) sizeGallery(cell, layout.row);
+  }
+
   // A photo in 357200 can be an anonymous child after the text marker.
   // Exclude the author line, inline emoji and the row of reaction buttons.
   function messageMedia(node) {
     const name = node.accessibilityId || "";
     if (/^(?:embed:|attachment[.:]|message\.attachments?:)/.test(name)) return true;
+    if (galleryLayout(node)) return true;
     if (name || original(node)?.horizontal) return false;
     let part = node;
     for (let depth = 0; part && depth < 8; depth++) {
@@ -1942,6 +1988,11 @@ if (phoenix.appearance) (() => {
   // throughout loading, including for images that fill a native media frame.
   function fitMediaBranch(node, depth = 0, context = {}) {
     if (!node || depth > 7 || context.skip?.has(node.id)) return null;
+    const gallery = galleryLayout(node);
+    if (gallery) {
+      sizeGallery(gallery);
+      return "gallery";
+    }
     const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
     if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) ||
         (!context.inEmbed && /thumb/i.test(name))) return null;
@@ -2731,7 +2782,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.11", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.12", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
