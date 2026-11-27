@@ -74,9 +74,10 @@ use crate::{
 };
 
 pub struct Engine {
-   runtime: Runtime,
-   context: Context,
-   plugins: BTreeMap<String, Loaded>,
+   runtime:   Runtime,
+   context:   Context,
+   plugins:   BTreeMap<String, Loaded>,
+   recovered: BTreeMap<String, String>,
 }
 
 struct Loaded {
@@ -103,6 +104,8 @@ struct Choices<'a> {
    staff:        bool,
    #[serde(default)]
    remote_shell: bool,
+   #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+   recovered:    BTreeMap<String, String>,
 }
 
 impl Default for Choices<'_> {
@@ -113,6 +116,7 @@ impl Default for Choices<'_> {
          settings:     Cow::Owned(BTreeMap::new()),
          staff:        false,
          remote_shell: false,
+         recovered:    BTreeMap::new(),
       }
    }
 }
@@ -189,6 +193,7 @@ impl Engine {
          runtime,
          context,
          plugins: BTreeMap::new(),
+         recovered: BTreeMap::new(),
       })
    }
 
@@ -398,15 +403,13 @@ impl Engine {
             disabled,
             enabled,
             settings: Cow::Borrowed(chosen.as_deref().unwrap_or(&empty)),
+            recovered: self.recovered.clone(),
             staff: crate::staff_enabled(),
             remote_shell,
          })
       });
       let path = state().choices_path();
-      let write = || -> std::io::Result<()> {
-         fs::create_dir_all(path.parent().expect("the choices path has a parent"))?;
-         fs::write(&path, json?)
-      };
+      let write = || -> std::io::Result<()> { write_choices(&path, &json?) };
       if let Err(err) = write() {
          log::error!("{}: {err}", path.display());
       }
@@ -585,6 +588,74 @@ fn log_object<'js>(ctx: &Ctx<'js>, plugin: &str) -> rquickjs::Result<Object<'js>
    Ok(log)
 }
 
+fn write_choices(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+   fs::create_dir_all(path.parent().expect("the choices path has a parent"))?;
+   let temp = path.with_extension("json.tmp");
+   fs::write(&temp, bytes)?;
+   fs::rename(temp, path)
+}
+
+// An opt-in recovery APK may request that a bundled plugin starts disabled
+// once, including a local override of the same name. The receipt and the
+// normal enable choice are saved together; the next user toggle wins.
+fn apply_recovery(choices: &mut Choices<'_>, bundled: &[Plugin]) -> bool {
+   let mut changed = false;
+   for plugin in bundled {
+      let Some(token) = plugin
+         .source
+         .lines()
+         .next()
+         .and_then(|line| line.strip_prefix("// @pause-once "))
+      else {
+         continue;
+      };
+      if token.len() != 32
+         || !token.bytes().all(|b| b.is_ascii_hexdigit())
+         || choices
+            .recovered
+            .get(&plugin.name)
+            .is_some_and(|seen| seen == token)
+      {
+         continue;
+      }
+      choices.enabled.remove(&plugin.name);
+      choices.disabled.insert(plugin.name.clone());
+      choices
+         .recovered
+         .insert(plugin.name.clone(), token.to_owned());
+      changed = true;
+   }
+   changed
+}
+
+#[cfg(test)]
+mod recovery_tests {
+   use super::*;
+
+   #[test]
+   fn pause_before_local_resolution_and_respect_later_user_choice() {
+      let mut choices: Choices<'_> =
+         serde_json::from_str(r#"{"enabled":["m3e-theme","other"],"staff":true}"#).unwrap();
+      let mut bundled = [Plugin {
+         name:   "m3e-theme".into(),
+         source: "// @pause-once 0123456789abcdef0123456789abcdef\n// @version 0.7.2".into(),
+      }];
+      assert!(apply_recovery(&mut choices, &bundled));
+      assert!(choices.disabled.contains("m3e-theme"));
+      assert!(!choices.enabled.contains("m3e-theme"));
+      assert!(choices.enabled.contains("other") && choices.staff);
+      let bytes = serde_json::to_vec(&choices).unwrap();
+      let mut next: Choices<'_> = serde_json::from_slice(&bytes).unwrap();
+      next.disabled.remove("m3e-theme");
+      assert!(!apply_recovery(&mut next, &bundled));
+      assert!(!next.disabled.contains("m3e-theme"));
+      bundled[0].source = bundled[0]
+         .source
+         .replace("0123456789abcdef", "fedcba9876543210");
+      assert!(apply_recovery(&mut next, &bundled));
+   }
+}
+
 /// Evaluates `bundled` plus every `*.js` file in the plugins directory, in name
 /// order, skipping the ones the user turned off.
 #[expect(
@@ -593,7 +664,7 @@ fn log_object<'js>(ctx: &Ctx<'js>, plugin: &str) -> rquickjs::Result<Object<'js>
 )]
 pub fn load_plugins(state: &'static State, bundled: Vec<Plugin>) -> Result<Vec<String>, Error> {
    let choices_path = state.choices_path();
-   let choices = match fs::read(&choices_path) {
+   let mut choices = match fs::read(&choices_path) {
       Ok(bytes) => {
          serde_json::from_slice::<Choices>(&bytes).unwrap_or_else(|err| {
             log::error!("{}: {err}", choices_path.display());
@@ -609,6 +680,14 @@ pub fn load_plugins(state: &'static State, bundled: Vec<Plugin>) -> Result<Vec<S
       platform.staff(&state.image);
    }
 
+   if apply_recovery(&mut choices, &bundled) {
+      let saved = serde_json::to_vec(&choices)
+         .map_err(std::io::Error::from)
+         .and_then(|bytes| write_choices(&choices_path, &bytes));
+      if let Err(err) = saved {
+         log::error!("{}: {err}", choices_path.display());
+      }
+   }
    let dir = state.plugins_dir();
    let mut sources = bundled
       .into_iter()
@@ -639,6 +718,7 @@ pub fn load_plugins(state: &'static State, bundled: Vec<Plugin>) -> Result<Vec<S
       .js
       .lock()
       .unwrap_or_else(std::sync::PoisonError::into_inner);
+   engine.recovered = choices.recovered;
    engine.context.with(|ctx| {
       if let Some(registry) = ctx.userdata::<Registry<'_>>() {
          *registry.chosen.borrow_mut() = choices.settings.into_owned();
