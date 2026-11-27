@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.8.1
+// @version 0.9.0
 // @author onichan0923
 
 (() => {
@@ -239,7 +239,7 @@
         if (contains(n, c => c.accessibilityId === contextCancel)) continue;
         for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...flat, gradient: null, backdropBlur: 0 });
       }
-      ui.update(host.id, { ...flat, gradient: null, radius: 0 });
+      ui.update(host.id, { ...flat, background: others.length === 2 && original(host)?.opaque && others.every(backing) ? conversation.body : 0, gradient: null, radius: 0 });
       branch = host;
     }
   }
@@ -910,8 +910,40 @@
     if (original(node)?.gradient || node.accessibilityId === "main-frame-gradient") ui.update(node.id, gradients);
   }
 
+  // Both the pinned header and the first scrolling row end in a one-dp
+  // rule. The list itself starts above the scrolling copy of the toolbar.
+  function guildSeam(node) {
+    if (!node || node.children.length || node.accessibilityId) return false;
+    const shape = original(node);
+    if (shape?.kind !== "view" || shape.pressable || !(shape.height > 0 && shape.height <= 1)) return false;
+    const header = parent(node);
+    if (!header || header.children.length !== 3 || header.children[2] !== node.id) return false;
+    const [title, actions] = children(header);
+    return title?.accessibilityId === "guild.menu" && original(actions)?.horizontal && actions.children.length >= 2;
+  }
+
+  function paintGuildSeam(title) {
+    if (title.accessibilityId !== "guild.menu") return;
+    const header = parent(title), edge = header && ui.node(header.children[2]);
+    if (!guildSeam(edge)) return;
+    const insets = original(header)?.padding;
+    if (insets && (insets[0] || insets[2] || insets[3])) {
+      // Move the header's horizontal inset onto the controls. The cap then
+      // spans the entire column, including the space beside the search field.
+      ui.update(header.id, { padding: [0, insets[1], 0, 0] });
+      for (const control of children(header).slice(0, 2)) {
+        const m = original(control)?.margin || [0, 0, 0, 0];
+        ui.update(control.id, { margin: [m[0] + insets[0], m[1], m[2] + insets[2],
+          m[3] + (control.id === title.id ? 0 : insets[3])] });
+      }
+    }
+    ui.update(header.id, { ...headerEdge, bg: 0, background: conversation.header });
+    ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height: 26,
+      margin: [0, 0, 0, 0], opacity: 1, background: conversation.body, pointerEvents: "none" });
+  }
+
   function clearEdge(node, atSeam = false, depth = 0) {
-    if (!node || node.id === ui.root() || depth > 3) return;
+    if (!node || node.id === ui.root() || depth > 3 || guildSeam(node)) return;
     const info = original(node);
     if (info?.pressable || pressable(node) || (info && !["view", "stack"].includes(info.kind))) return;
     // A device-pixel hairline need not have a numeric height in the mirror.
@@ -1210,6 +1242,7 @@
       rememberLayout("channel-pane", commonFrame(head, list));
       paintToolbar(head);
     }
+    forLive("guild.menu", paintGuildSeam);
     for (const key of dockSlots) forLive(key, paintUserDock);
     let lane = list;
     for (let i = 0; i < 7; i++) {
@@ -1439,11 +1472,33 @@
     }
   }
 
+  // A photo in 357200 can be an anonymous child after the text marker.
+  // Exclude the author line, inline emoji and the row of reaction buttons.
+  function messageMedia(node) {
+    const name = node.accessibilityId || "";
+    if (/^(?:embed:|attachment[.:]|message\.attachments?:)/.test(name)) return true;
+    if (name || original(node)?.horizontal) return false;
+    let part = node;
+    for (let depth = 0; part && depth < 8; depth++) {
+      const info = original(part), kind = part.kind || info?.kind;
+      if (part.accessibilityId && !/^(?:attachment|media|image)/i.test(part.accessibilityId)) return false;
+      if (kind === "image") return info?.height == null || info.height > 40;
+      if (!["view", "stack"].includes(kind) || info?.horizontal || (info?.height != null && info.height <= 32)) return false;
+      if (part.children.length !== 1) {
+        // A video/photo tile can also have an overlay button or spoiler mask.
+        return children(part).some(n => original(n)?.kind === "image" && original(n).height > 40);
+      }
+      part = ui.node(part.children[0]);
+    }
+    return false;
+  }
+
   function paintBubble(anchor, embeds) {
     if (anchor.list == null || anchor.sheet != null) return;
-    const id = anchor.accessibilityId.slice(messageMatch.prefix.length);
+    const id = anchor.accessibilityId.split(":")[1];
     if (!/^\d+$/.test(id)) return;
     const cardIds = new Set(embeds.map(card => card.id));
+    let photo = false;
     let box = anchor;
     // Walk only up this message's column. An avatar, reply preview, another
     // message, a date separator or the list itself marks the outer boundary.
@@ -1453,7 +1508,9 @@
           (up.accessibilityId && up.accessibilityId !== "message.body:" + id)) break;
       const others = children(up).filter(n => n.id !== box.id);
       if (!others.length) { if (up.parent === anchor.list) break; box = up; continue; }
-      let companion = false, unsafe = false, budget = 48;
+      const following = children(up).slice(up.children.indexOf(box.id) + 1);
+      const hasMedia = !original(up)?.horizontal && following.some(messageMedia);
+      let companion = hasMedia, unsafe = false, budget = 48;
       const scan = [...others];
       while (scan.length && budget-- > 0) {
         const n = scan.pop(), aid = n.accessibilityId || "";
@@ -1464,6 +1521,7 @@
         scan.push(...children(n));
       }
       if (unsafe || scan.length || !companion) break;
+      photo ||= hasMedia;
       box = up;
     }
     // Some builds use a labelled row containing the avatar as the content
@@ -1498,11 +1556,103 @@
         ui.update(n.id, { width: "fill", minWidth: 0, shrink: 1 });
       }
     }
-    const media = hasCard || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
+    const media = hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
     ui.update(box.id, { background: conversation.bubble, radius: 16, minWidth: 0, shrink: 1, clip: true,
       radiusTopLeft: joinedAbove ? 4 : 16, radiusTopRight: joinedAbove ? 4 : 16,
       radiusBottomLeft: joinedBelow ? 4 : 16, radiusBottomRight: joinedBelow ? 4 : 16,
-      padding: media ? [5, 5, 5, 5] : [10, 5, 10, 5] });
+      padding: [10, 5, 10, media ? 10 : 5] });
+  }
+
+  function photoOnly(author) {
+    if (author.list == null || author.sheet != null) return;
+    let branch = author;
+    for (let depth = 0; depth < 5; depth++) {
+      const up = parent(branch);
+      if (!shellNode(up) || up.id === author.list || up.children.length > 7) return;
+      const parts = children(up);
+      if (parts.some(n => contains(n, c => (c.accessibilityId || "").startsWith(messageMatch.prefix), 3))) return;
+      if (!original(up)?.horizontal && parts.slice(parts.findIndex(n => n.id === branch.id) + 1).some(messageMedia)) {
+        // Start at the whole author line so its inline badges are outside the media scan.
+        paintBubble({ ...branch, accessibilityId: author.accessibilityId, list: author.list }, []);
+        return;
+      }
+      branch = up;
+    }
+  }
+
+  const pickerAnchors = ["expression.search", "xp.grid", "xp-handle", "expression-rail", "media-grid",
+    "mk-photos", "media-camera", "mk-handle", "mk-bar", "media-empty-action", { prefix: "expression.category:" }];
+  const pickerCorners = new Map();
+  function clearPickerCorners(all) {
+    for (const [id, record] of pickerCorners) {
+      const n = ui.node(id);
+      if (!all && n && n.children[0] === record.child) continue;
+      for (const remove of record.removers) remove();
+      if (n && n.children[0] === record.child) ui.update(id, { radiusTopLeft: record.left, radiusTopRight: record.right });
+      pickerCorners.delete(id);
+    }
+  }
+
+  function cornerFace(side, radius, inside, outside) {
+    const gravity = "top|" + side;
+    return switchFace({ gravity, width: radius, height: radius, background: outside, clip: true }, [
+      switchFace({ gravity, width: radius * 2, height: radius * 2, radius, background: inside }),
+    ]);
+  }
+
+  function pickerGrid(face) {
+    const queue = [[face, 0]];
+    for (let count = 0; queue.length && count < 48; count++) {
+      const [n, depth] = queue.shift(), shape = original(n);
+      if (shape?.kind === "scroll" || shape?.kind === "list" || n.children.length >= 6) return true;
+      if (depth < 5) for (const child of children(n)) queue.push([child, depth + 1]);
+    }
+    return false;
+  }
+
+  function paintPicker(anchor, discovered = false) {
+    if ((discovered && anchor.sheet != null) || menuAncestor(anchor)) return;
+    let branch = anchor;
+    for (let depth = 0; branch && depth < 12; depth++, branch = parent(branch)) {
+      const face = original(branch), host = parent(branch);
+      if (!host || host.id === ui.root() || branch.accessibilityId === "composer") return;
+      if (!(face?.topLeft >= 8 && face.topRight >= 8 && Math.max(face.topLeft, face.topRight) <= 48) || face.horizontal || face.pressable ||
+          (face.height != null && face.height < 100) || !["view", "stack"].includes(face.kind)) continue;
+      if (!branch.children.length || !ui.mount) return;
+      if (!pickerGrid(branch)) continue;
+      if (discovered && ["composer", "guild.menu", menuRoot, messageMatch].some(match =>
+          ui.findDown?.(branch.id, match, 7) != null)) continue;
+      clearPickerCorners(false);
+      if (pickerCorners.has(branch.id)) return true;
+      const inside = face.fill ??
+        children(branch).map(n => original(n)?.fill).find(color => color != null) ?? palette.row;
+      // A single panel may be placed over a full-screen chat stack. Paint two
+      // radius-sized squares on the panel itself, leaving the rest of that stack visible.
+      const child = branch.children[0];
+      const removers = ["start", "end"].map(side => ui.mount(branch.id,
+        cornerFace(side, side === "start" ? face.topLeft : face.topRight, inside, conversation.body)));
+      ui.update(branch.id, { radiusTopLeft: 0, radiusTopRight: 0 });
+      pickerCorners.set(branch.id, { child, left: face.topLeft, right: face.topRight, removers });
+      rememberLayout("picker", host);
+      return true;
+    }
+  }
+
+  let pendingPicker;
+  function stopPickerWatch() {
+    if (pendingPicker) { pendingPicker(); pendingPicker = null; }
+  }
+
+  function openingPicker() {
+    stopPickerWatch();
+    const until = Date.now() + 1500;
+    // Labels on the photo grid may be localized. Only inspect newly mounted
+    // rows during the user's explicit open action, then release the watcher.
+    pendingPicker = ui.onNode({ prefix: "" }, stamp => {
+      if (Date.now() > until) { stopPickerWatch(); return; }
+      const n = ui.node(stamp.id);
+      if (n && paintPicker(n, true)) stopPickerWatch();
+    });
   }
 
   function styleChat(node) {
@@ -1528,6 +1678,7 @@
     const next = colorsFor(dark);
     if (palette && activeDark === dark && Object.keys(next).every(k => next[k] === palette[k])) return;
     activeDark = dark;
+    clearPickerCorners(true);
     removeSkins(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
@@ -1539,6 +1690,7 @@
       body: dark ? mix(palette.canvas, palette.row, 0.48) : palette.row,
       bubble: dark ? mix(palette.row, palette.accent, 0.055) : mix(palette.canvas, palette.accent, 0.045),
     };
+    appearance?.setStatusBarColor?.(conversation.header, !dark);
     applyNativePalette(true);
     for (const remove of rules) remove();
     rules = [];
@@ -1570,6 +1722,8 @@
     forLive(contextCancel, styleContext);
     forLive(searchId, settingsFromSearch);
     forLive(messageMatch, styleChat);
+    forLive({ prefix: "message.author:" }, photoOnly);
+    for (const name of pickerAnchors) forLive(name, paintPicker);
     for (const name of ["date-divider", "unread-divider"]) forLive(name, clearLabelRules);
     forLive(menuMatch, styleMenu);
     forLive({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
@@ -1610,7 +1764,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.8.1", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.9.0", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -1685,6 +1839,7 @@
       const list = ui.node(id);
       if (list) joinHeaderAndList(node, list, true);
     }
+    paintGuildSeam(node);
     if (recordLayouts) rememberLayout("guild-header", parent(parent(node)) || parent(node) || node);
   }
   watch("main-tabs-frame-border", clearFrameBorder);
@@ -1699,6 +1854,8 @@
   watch({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
   watch("search.entry", styleHeader);
   watch("composer", styleComposer);
+  for (const name of pickerAnchors) watch(name, paintPicker);
+  watch({ prefix: "message.author:" }, photoOnly);
   watch(searchId, settingsFromSearch);
   for (const name of toolNames) watch(name, () => forLive("composer", styleComposer));
   watch(menuMatch, styleMenu);
@@ -1717,6 +1874,8 @@
   }));
   watchers.push(ui.onEvent("press", e => {
     const target = e.accessibilityId || menuTargets.get(e.node);
+    if (target === "composer.attachments" || target === "composer.expressions") openingPicker();
+    else stopPickerWatch();
     if (target === "message.actions.edit") {
       clearEditing();
       editingMessage = e.messageId || pickedMessage;
@@ -1738,6 +1897,7 @@
       paintSettingsList(list);
     } else if (lastList == null || event.node === lastList) {
       forLive(messageMatch, styleChat);
+      forLive({ prefix: "message.author:" }, photoOnly);
       if (lastList != null) paintCallRows(ui.node(lastList));
     }
   }));
@@ -1806,6 +1966,8 @@
     // color. Discord supplies its current native palette on the next launch.
     if (nativeScheme && phoenix.bridge) phoenix.bridge.invoke(9, 84, { [hostTheme.dark]: activeDark });
     finishDialogWatch();
+    stopPickerWatch();
+    clearPickerCorners(true);
     removeSkins(true);
     clearEditing();
     for (const remove of watchers) remove();
