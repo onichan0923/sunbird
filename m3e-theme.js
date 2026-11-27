@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.4
+// @version 0.11.5
 // @author onichan0923
 
 (() => {
@@ -533,6 +533,32 @@
   function switchFace(props, kids = []) {
     return { kind: "view", props: { absolute: true, gravity: "center", pointerEvents: "none",
       accessibilityHidden: true, ...props }, children: kids };
+  }
+
+  // The Android renderer reads these tags from zero-size decorative children.
+  // Discord keeps ownership of the real control's nativeID and accessibility.
+  const surfaceTags = new Map();
+  function markSurface(node, tag, child) {
+    if (!ui.androidControlSurfaces || !ui.mount) return;
+    const old = surfaceTags.get(node.id);
+    if (old?.tag === tag && old.child === child &&
+        (Date.now() - old.created < 200 || !old.remove.isMounted || old.remove.isMounted())) return;
+    old?.remove();
+    const remove = ui.mount(node.id, switchFace({ width: 0, height: 0, nativeID: "sunbird.m3e/" + tag }));
+    surfaceTags.set(node.id, { tag, child, remove, created: Date.now() });
+  }
+
+  function clearSurfaceTags(all = false) {
+    for (const [id, tag] of surfaceTags) {
+      if (!all && ui.node(id)?.children.includes(tag.child)) continue;
+      tag.remove();
+      surfaceTags.delete(id);
+    }
+  }
+
+  function primaryAction(button, label, radius) {
+    if (label) markSurface(button, "action/" + palette.accent.toString(16) + "/" + radius,
+      childOf(label, button.id)?.id);
   }
 
   function removeSkins(all) {
@@ -1244,10 +1270,16 @@
     return title?.accessibilityId === "guild.menu" && original(actions)?.horizontal && actions.children.length >= 2;
   }
 
+  function guildHeaderEdge(title) {
+    const id = title?.accessibilityId === "guild.menu" ? parent(title)?.children[2] : null;
+    const edge = id == null ? null : ui.node(id);
+    return guildSeam(edge) ? edge : null;
+  }
+
   function paintGuildSeam(title) {
-    if (title.accessibilityId !== "guild.menu") return;
-    const header = parent(title), edge = header && ui.node(header.children[2]);
-    if (!guildSeam(edge)) return;
+    const edge = guildHeaderEdge(title);
+    if (!edge) return;
+    const header = parent(title);
     const insets = original(header)?.padding;
     if (insets && (insets[0] || insets[2] || insets[3])) {
       // Move the header's horizontal inset onto the controls. The cap then
@@ -1260,7 +1292,9 @@
       }
     }
     ui.update(header.id, { ...squareDrawerTop, bg: 0, background: conversation.header });
-    ui.update(edge.id, { ...plainSurface, ...barRadii(10, 0), width: "fill", height: 10,
+    markSurface(header, "seam", title.id);
+    const height = ui.androidControlSurfaces ? 0 : 26;
+    ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height,
       margin: [0, 0, 0, 0], opacity: 1, background: conversation.body, pointerEvents: "none" });
   }
 
@@ -1431,12 +1465,7 @@
       const id = ui.findDown(list.id, "guild.menu", 4);
       if (id != null) title = ui.node(id);
     }
-    if (title?.accessibilityId === "guild.menu") {
-      const header = parent(title);
-      if (header && header.children.length === 3 && guildSeam(ui.node(header.children[2]))) {
-        return { ...paneSurface(0), ...drawerEdge };
-      }
-    }
+    if (guildHeaderEdge(title)) return { ...paneSurface(0), ...drawerEdge };
     return paneSurface();
   }
 
@@ -1507,6 +1536,9 @@
       viewport = shell;
     }
     for (let n = viewport, i = 0; n && n.id !== pane.id && i < 12; i++, n = parent(n)) tintBacking(n, conversation.header);
+    if (guild && guildHeaderEdge(head)) {
+      markSurface(pane, "pane/" + conversation.header.toString(16), lower.id);
+    }
     const surface = guild ? channelSurface(list, head) : paneSurface();
     ui.update(viewport.id, surface);
     // A native scroll view can draw its own rectangular background over a
@@ -1776,6 +1808,7 @@
     actions.forEach((n, i) => {
       paintButton(n, i ? palette.row : palette.accent, i ? palette.ink : palette.onAccent, buttonLabel(n));
       ui.update(n.id, barRadii(18, 18));
+      if (!i) primaryAction(n, buttonLabel(n), 18);
     });
     return true;
   }
@@ -2061,6 +2094,7 @@
     for (const branch of parts) if (branch.id !== button.id && shellNode(branch)) ui.update(branch.id, { ...plainSurface, blur: null });
     ui.update(note.id, {color: palette.ink});
     paintButton(button, palette.accent, palette.onAccent);
+    primaryAction(button, actionLabel(button), original(button)?.topLeft || 8);
     return true;
   }
 
@@ -2077,7 +2111,10 @@
         if (threadNotice(n,anchor)) return;
       }
       const action=actionIn(anchor) || (interactive(parent(anchor)) ? parent(anchor) : null);
-      if (action && anchor.sheet == null) paintButton(action, palette.accent, palette.onAccent);
+      if (action && anchor.sheet == null) {
+        paintButton(action, palette.accent, palette.onAccent);
+        primaryAction(action, actionLabel(action), original(action)?.topLeft || 8);
+      }
     }
   }
   function chatFooter(list) {
@@ -2209,26 +2246,32 @@
   const inboxRows = ["inbox-row","inbox-section","inbox-title","inbox.title","recent-activity-text"];
 
   const requestActions = {prefix:"request-actions-"};
-  function paintRequestButton(slot, button, fill, ink) {
+  function paintRequestButton(slot, button, fill, ink, primaryLabel) {
     paintButton(button, fill, ink);
     // Some notification rows round and paint an enclosing slot.
-    if (button.id === slot.id) return;
-    for (let n = parent(button); n; n = parent(n)) {
+    let face = button;
+    for (let n = button; n && n.id !== slot.id;) {
+      n = parent(n);
+      if (!n) break;
       const surface = original(n);
-      if (surface?.brandFill || (surface?.topLeft && (surface.opaque || surface.backplate))) ui.update(n.id, buttonPaint(fill));
-      if (n.id === slot.id) break;
+      if (surface?.brandFill || (surface?.topLeft && (surface.opaque || surface.backplate))) {
+        face = n;
+        ui.update(n.id, buttonPaint(fill));
+      }
     }
+    if (primaryLabel) primaryAction(face, primaryLabel, original(face)?.topLeft || 8);
   }
 
-  function requestPair(n, group) {
+  function requestPair(n, group, feed) {
     const slots = children(n);
     if (slots.length !== 2) return false;
     const buttons = slots.map(actionIn);
     if (!buttons.every(Boolean)) return false;
-    if (!group && slots[1].accessibilityId !== "ignore" && buttons[1].accessibilityId !== "ignore") return false;
+    const named = group || slots[1].accessibilityId === "ignore" || buttons[1].accessibilityId === "ignore";
+    if (!named && !(feed && buttons.every(b => shellNode(b) && buttonLabel(b)))) return false;
     const labels = buttons.map(actionLabel);
     if (!labels.every(Boolean)) return false;
-    paintRequestButton(slots[0],buttons[0],palette.accent,palette.onAccent);
+    paintRequestButton(slots[0],buttons[0],palette.accent,palette.onAccent,labels[0]);
     paintRequestButton(slots[1],buttons[1],palette.pressed,palette.ink);
     return true;
   }
@@ -2240,13 +2283,14 @@
     }
     const isRoot = inboxPages.includes(root.accessibilityId);
     if (isRoot) ui.update(root.id,{...flat,background:conversation.body});
-    const queue = [[anchor, null, 0]];
+    const queue = [[anchor, null, 0, false]];
     for (let i = 0; i < queue.length && i < 640; i++) {
-      const [n, inActions, depth] = queue[i];
+      const [n, inActions, depth, inFeed] = queue[i];
       const id = n.accessibilityId || "", kind = kindOf(n);
       const named = id.startsWith(requestActions.prefix);
       const group = named ? n : inActions;
-      if ((named || original(n)?.horizontal) && requestPair(n,group)) continue;
+      const feed = inFeed || (isRoot && ["list","scroll"].includes(kind));
+      if ((named || original(n)?.horizontal) && requestPair(n,group,feed)) continue;
       if (inboxPages.includes(id) || (isRoot && ["list","scroll"].includes(kind))) {
         ui.update(n.id,{...flat,background:conversation.body});
       } else if (isRoot && !named && !inActions && !interactive(n) && ["view","stack"].includes(kind) &&
@@ -2256,7 +2300,7 @@
       if (id === "inbox-title" || id === "inbox.title") {
         for (const title of descendants(n,3,12)) if (kindOf(title) === "text") ui.update(title.id,{color:palette.ink});
       }
-      if (depth < 14) for (const child of children(n)) queue.push([child,group,depth+1]);
+      if (depth < 14) for (const child of children(n)) queue.push([child,group,depth+1,feed]);
     }
     if (isRoot) rememberLayout("inbox",root);
   }
@@ -2457,7 +2501,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.4", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.5", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2593,6 +2637,7 @@
     } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
   }));
   watchers.push(ui.onEvent("pageSettle", () => {
+    clearSurfaceTags();
     forLive("composer",styleComposer);
     forLive(requestActions,inbox);
     forLive("social-tabs",paintTabs);
@@ -2712,6 +2757,7 @@
     finishDialogWatch();
     stopPickerWatch();
     clearPickerCorners(true);
+    clearSurfaceTags(true);
     stopGuildWatch();
     removeSkins(true);
     clearEditing();
