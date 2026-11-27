@@ -1938,11 +1938,10 @@ if (phoenix.appearance) (() => {
     return false;
   }
 
-  // A media tile takes its size from the image. The original preview height
-  // caps portrait shots; Android's drawable supplies the ratio when the
-  // padded column is narrower than a landscape image.
+  // Uploads can be mounted before their drawable exists. Keep a size owner
+  // throughout loading, including for images that fill a native media frame.
   function fitMediaBranch(node, depth = 0, context = {}) {
-    if (!node || depth > 7) return null;
+    if (!node || depth > 7 || context.skip?.has(node.id)) return null;
     const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
     if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) ||
         (!context.inEmbed && /thumb/i.test(name))) return null;
@@ -1951,30 +1950,43 @@ if (phoenix.appearance) (() => {
     const height = shape?.height ?? context.height;
     const attachment = context.attachment || /^(?:message\.attachments?[:.]|attachment|media|image)|^embed:.*:image$/i.test(name);
     if (kind === "image") {
-      if (height == null && !attachment) return null;
+      if (height == null) return attachment ? "native" : null;
+      if (shape?.height == null) return "native";
       // Wrapped parents already supply a width limit. A percentage cap here
       // would feed the stack's previous width back into its next measure.
-      const size = { width: "wrap", height: "wrap", maxWidth: null, maxHeight: height ?? null, scale: "fit" };
+      const size = { width: "wrap", height: context.article ? "wrap" : height, maxWidth: null, maxHeight: height, scale: "fit" };
+      // Without a drawable, ImageView uses its suggested minimum width.
+      // Once decoded, the fixed preview height supplies the scale for portraits.
+      if (!context.article) size.minWidth = height;
       if (context.inStack) size.gravity = "center";
       ui.update(node.id, size);
       return "tile";
     }
     if (!shellNode(node)) return null;
+    if (!context.article && kind === "stack" && shape?.height > 40 &&
+        (attachment || contains(node, n => kindOf(n) === "image", 3))) return "native";
     if (shape?.horizontal && node.children.length > 1) {
       const body = context.inEmbed && stripedBody(node);
-      if (!body || !fitMediaBranch(body, depth + 1, { inEmbed: true })) return null;
+      if (!body || !fitMediaBranch(body, depth + 1, { inEmbed: true, article: true })) return null;
       ui.update(body.id, { width: 0, flex: 1, minWidth: 0 });
       return "content";
     }
     const parts = children(node);
-    const childContext = { height, attachment, inEmbed: context.inEmbed, inStack: kind === "stack" };
-    let fitted = false, tile = false;
+    const childContext = { ...context, height, attachment, inStack: kind === "stack" };
+    let fitted = false, tile = false, nativeFrame = false;
     for (const part of parts) {
       const result = fitMediaBranch(part, depth + 1, childContext);
       if (result) fitted = true;
       if (result === "tile") tile = true;
+      if (result === "native") nativeFrame = true;
     }
     if (!fitted) return null;
+    // Fill and overlaid children can depend entirely on the frame's original
+    // dimensions. Preserve those dimensions all the way to the content column.
+    if (nativeFrame && (parts.length === 1 || kind === "stack")) {
+      if (kind === "view") ui.update(node.id, { maxWidth: "100%" });
+      return "native";
+    }
     // A stack can also hold a spoiler or a play control over the picture.
     // A column with captions or game actions keeps its own content width.
     if (tile && (parts.length === 1 || kind === "stack")) {
@@ -2178,8 +2190,9 @@ if (phoenix.appearance) (() => {
     for (const card of embeds) {
       if (card.id === box.id || !childOf(card, box.id)) continue;
       hasCard = true;
-      const compact = fitMediaBranch(card, 0, { inEmbed: true }) === "tile";
-      const sizing = { width: compact ? "wrap" : "fill", minWidth: 0, shrink: 1 };
+      const fittedCard = fitMediaBranch(card, 0, { inEmbed: true });
+      if (fittedCard === "native") continue;
+      const sizing = { width: fittedCard === "tile" ? "wrap" : "fill", minWidth: 0, shrink: 1 };
       ui.update(card.id, sizing);
       for (let n = parent(card), i = 0; n && n.id !== box.id && i < 8; n = parent(n), i++) {
         const info = original(n);
@@ -2192,7 +2205,7 @@ if (phoenix.appearance) (() => {
     let fitted = false;
     for (const part of parts.slice(body ? box.children.indexOf(body.id) : 0)) {
       if (part.id === body?.id && marker.id !== anchor.id) continue;
-      if (fitMediaBranch(part)) fitted = true;
+      if (fitMediaBranch(part, 0, { skip: cardIds })) fitted = true;
     }
     const media = fitted || hasCard || photo || children(anchor).some(messageMedia) || contains(box, n => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
     for (const [oldBox, owner] of bubbles) {
@@ -2718,7 +2731,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.10", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.11", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
