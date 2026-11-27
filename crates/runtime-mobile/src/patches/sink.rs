@@ -189,6 +189,9 @@ impl Sink for PatchSink {
             return Action::Pass;
          },
       };
+      if !phoenix_ui_mobile::expand_word_patches(&mut ops) {
+         return Action::Pass;
+      }
       if debug {
          crate::debug::record_ops(&ops);
       }

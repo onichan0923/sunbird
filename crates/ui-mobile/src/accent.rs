@@ -1,6 +1,7 @@
 //! Remap resolved Discord UI colors while retaining host values for live theme
 //! changes.
 mod animated;
+mod canvas;
 
 use std::collections::{
    HashMap,
@@ -116,7 +117,10 @@ fn uses_system_font(mirror: &Mirror, mut id: i32, roots: &HashMap<i32, HashSet<S
 
 fn plain_family(v: &Value) -> bool {
    let name = v.as_str().unwrap_or_default().to_ascii_lowercase();
-   !(name.contains("mono") || name.contains("emoji") || name.contains("icon"))
+   !(name.contains("mono")
+      || name.contains("emoji")
+      || name.contains("icon")
+      || name.contains("glyph"))
 }
 
 fn scalar(prop: Prop) -> bool {
@@ -176,22 +180,61 @@ fn colored(source: u32, target: u32) -> Value {
    Value::I64(i64::from((source & 0xFF00_0000) | (target & 0x00FF_FFFF)))
 }
 
+// Phoenix uses numeric keys for compact records and strings for map records.
+fn run_field(span: &Value, key: Prop) -> Option<&Value> {
+   if let Value::Map(entries) = span {
+      let name = key.name()?;
+      return entries.iter().find(|(k, _)| k == name).map(|(_, v)| v);
+   }
+   span.field(key.key())
+}
+
+fn set_run_field(span: &mut Value, key: Prop, value: Value) {
+   match span {
+      Value::Obj(entries) => {
+         if let Some((_, v)) = entries.iter_mut().find(|(k, _)| *k == key.key()) {
+            *v = value;
+         } else {
+            entries.push((key.key(), value));
+         }
+      },
+      Value::Map(entries) => {
+         let Some(name) = key.name() else { return };
+         if let Some((_, v)) = entries.iter_mut().find(|(k, _)| k == name) {
+            *v = value;
+         } else {
+            entries.push((name.to_owned(), value));
+         }
+      },
+      _ => {},
+   }
+}
+
+fn text_run(span: &Value) -> bool {
+   matches!(span, Value::Obj(_) | Value::Map(_))
+      && !matches!(
+         run_field(span, crate::prop!("code")),
+         Some(Value::Bool(true) | Value::I32(1))
+      )
+      && !matches!(
+         run_field(span, crate::prop!("image")),
+         Some(Value::Obj(_) | Value::Map(_))
+      )
+      && run_field(span, crate::prop!("font")).is_none_or(plain_family)
+}
+
 fn link_color(span: &Value) -> Option<u32> {
-   let Value::Obj(fields) = span else {
-      return None;
-   };
-   let url = fields.iter().any(|(k, v)| {
-      (*k == crate::prop!("url").key() || *k == crate::prop!("link").key())
-         && (v
-            .as_str()
+   let url = crate::prop!("url");
+   let linked = [url, crate::prop!("link")]
+      .into_iter()
+      .filter_map(|k| run_field(span, k))
+      .any(|v| {
+         v.as_str()
+            .or_else(|| run_field(v, url).and_then(Value::as_str))
             .is_some_and(|s| s.starts_with("https://") || s.starts_with("http://"))
-            || v
-               .field(crate::prop!("url").key())
-               .and_then(Value::as_str)
-               .is_some_and(|s| s.starts_with("https://") || s.starts_with("http://")))
-   });
-   let color = span.field(Prop::COLOR.key()).and_then(argb);
-   (url || color.is_some_and(|c| matches!(tone(c), Some(Tone::Link))))
+      });
+   let color = run_field(span, Prop::COLOR).and_then(argb);
+   (linked || color.is_some_and(|c| matches!(tone(c), Some(Tone::Link))))
       .then_some(color.unwrap_or(0xFF00_0000))
 }
 
@@ -220,8 +263,11 @@ fn text_runs(prop: Prop) -> bool {
 }
 
 fn candidate(prop: Prop, value: &Value) -> bool {
+   if prop == canvas::DRAW {
+      return matches!(value, Value::Arr(_) | Value::Words(_));
+   }
    if text_runs(prop) {
-      return matches!(value, Value::Arr(spans) if spans.iter().any(|s| link_color(s).is_some() || s.field(Prop::FONT_FAMILY.key()).is_some()));
+      return matches!(value, Value::Arr(spans) if spans.iter().any(|s| text_run(s) || link_color(s).is_some()));
    }
    if gradient(prop) {
       return stop_colors(value).is_some_and(|v| v.iter().any(|s| argb(s).is_some_and(brand_fill)));
@@ -244,6 +290,9 @@ fn replacement(
    palette: Option<Palette>,
    system_font: bool,
 ) -> Option<Value> {
+   if prop == canvas::DRAW {
+      return canvas::repaint(v, mirror, id, palette?);
+   }
    if gradient(prop) {
       let palette = palette?;
       let stops = stop_colors(v)?;
@@ -291,31 +340,34 @@ fn replacement(
       let mut result = None;
       let pal = palette.filter(|_| prop == crate::prop!("spans"));
       for (i, span) in spans.iter().enumerate() {
-         let Value::Obj(_) = span else { continue };
          let link = link_color(span).filter(|_| !protected(mirror, id));
-         let family = span.field(Prop::FONT_FAMILY.key());
-         let font = ((system_font && (family.is_some() || link.is_some()))
+         // Unstyled runs already inherit the TextView's system face and weight.
+         // Adding an explicit font to those runs would force regular weight.
+         let styled = [
+            crate::prop!("font"),
+            crate::prop!("weight"),
+            crate::prop!("bold"),
+         ]
+         .iter()
+         .any(|k| run_field(span, *k).is_some());
+         let font = ((system_font && styled)
             || (pal.is_some_and(|p| p.system_links) && link.is_some()))
-            && family.is_none_or(plain_family);
+            && text_run(span);
          let color = link.zip(pal);
          if color.is_none() && !font {
             continue;
          }
          let out = result.get_or_insert_with(|| spans.clone());
-         if let Value::Obj(fields) = &mut out[i] {
-            let mut set = |key: Prop, value| {
-               if let Some((_, old)) = fields.iter_mut().find(|(k, _)| *k == key.key()) {
-                  *old = value;
-               } else {
-                  fields.push((key.key(), value));
-               }
-            };
-            if let Some((color, palette)) = color {
-               set(Prop::COLOR, colored(color, palette.primary));
-            }
-            if font {
-               set(Prop::FONT_FAMILY, Value::Str("sans-serif".into()));
-            }
+         if let Some((color, palette)) = color {
+            set_run_field(&mut out[i], Prop::COLOR, colored(color, palette.primary));
+         }
+         // In 357200 the TextView reads fontFamily; each inline run reads font.
+         if font {
+            set_run_field(
+               &mut out[i],
+               crate::prop!("font"),
+               Value::Str("sans-serif".into()),
+            );
          }
       }
       return result.map(Value::Arr);
@@ -411,6 +463,9 @@ impl Accents {
             props.push((Prop::FONT_FAMILY, Value::Null));
          }
          for (prop, value) in &mut *props {
+            if *prop == canvas::EDITS {
+               changed |= self.expand_draw_edits(mirror, palette, *id, prop, value);
+            }
             if *prop == crate::prop!("worklet") {
                self.animated.bind(*id, value);
                continue;
@@ -471,6 +526,39 @@ impl Accents {
          }
       }
       changed
+   }
+
+   fn expand_draw_edits(
+      &mut self,
+      mirror: &Mirror,
+      palette: Option<Palette>,
+      id: i32,
+      prop: &mut Prop,
+      value: &mut Value,
+   ) -> bool {
+      let Some(paint) = self
+         .originals
+         .get_mut(&id)
+         .and_then(|v| v.iter_mut().find(|p| p.key == canvas::DRAW))
+      else {
+         return false;
+      };
+      if canvas::merge(&mut paint.source, value).is_none() {
+         self.remove(id, canvas::DRAW);
+         return false;
+      }
+      if !paint.applied
+         && palette
+            .and_then(|p| canvas::repaint(&paint.source, mirror, id, p))
+            .is_none()
+      {
+         return false;
+      }
+      // Replay the current full program when a partial edit changes a themed
+      // plate.
+      *prop = canvas::DRAW;
+      *value = paint.source.clone();
+      paint.applied
    }
 
    fn remove(&mut self, id: i32, key: Prop) {
@@ -621,11 +709,12 @@ mod tests {
          }),
       );
       let key = Prop::FONT_FAMILY;
+      let run_font = crate::prop!("font");
       let runs = crate::prop!("spans");
       let make = |family: &str| {
          Value::Obj(vec![
-            (key.key(), Value::Str(family.into())),
-            (crate::prop!("fontWeight").key(), Value::I32(700)),
+            (run_font.key(), Value::Str(family.into())),
+            (crate::prop!("weight").key(), Value::I32(700)),
          ])
       };
       let url = Value::Obj(vec![(
@@ -653,7 +742,7 @@ mod tests {
       assert_eq!(v[0], make("sans-serif"));
       assert_eq!(v[1], make("monospace"));
       assert_eq!(
-         v[2].field(key.key()).and_then(Value::as_str),
+         v[2].field(run_font.key()).and_then(Value::as_str),
          Some("sans-serif")
       );
       let moved = send(&mut m, &mut a, vec![Op::Children {
@@ -672,9 +761,10 @@ mod tests {
    #[test]
    fn standalone_font_and_theme_can_be_enabled_and_unloaded_in_either_order() {
       let family = Prop::FONT_FAMILY;
+      let run_font = crate::prop!("font");
       let runs = crate::prop!("spans");
       let url = crate::prop!("url");
-      let bold = crate::prop!("fontWeight");
+      let bold = crate::prop!("weight");
       let native = Value::Str("gg sans".into());
       let system = Value::Str("sans-serif".into());
       let link = Value::Obj(vec![
@@ -682,7 +772,7 @@ mod tests {
          (Prop::COLOR.key(), color(0xFF00_6DD4)),
          (bold.key(), Value::I32(700)),
       ]);
-      let code = Value::Obj(vec![(family.key(), Value::Str("monospace".into()))]);
+      let code = Value::Obj(vec![(run_font.key(), Value::Str("monospace".into()))]);
       let raw = Value::Arr(vec![link.clone(), code.clone()]);
       for font_first in [true, false] {
          let (mut m, mut a) = (Mirror::default(), Accents::default());
@@ -700,7 +790,7 @@ mod tests {
          let Some(Value::Arr(v)) = get(&first, 7, runs) else {
             panic!()
          };
-         assert_eq!(v[0].field(family.key()), font_first.then_some(&system));
+         assert_eq!(v[0].field(run_font.key()), font_first.then_some(&system));
          assert_eq!(
             v[0].field(Prop::COLOR.key()),
             Some(&color(if font_first {
@@ -730,7 +820,7 @@ mod tests {
          let Some(Value::Arr(v)) = get(&both, 7, runs) else {
             panic!()
          };
-         assert_eq!(v[0].field(family.key()), Some(&system));
+         assert_eq!(v[0].field(run_font.key()), Some(&system));
          assert_eq!(v[0].field(Prop::COLOR.key()), Some(&color(PINK.primary)));
          assert_eq!(v[0].field(url.key()), link.field(url.key()));
          assert_eq!(v[0].field(bold.key()), Some(&Value::I32(700)));
@@ -744,7 +834,7 @@ mod tests {
          let Some(Value::Arr(v)) = get(&left, 7, runs) else {
             panic!()
          };
-         assert_eq!(v[0].field(family.key()), (!font_first).then_some(&system));
+         assert_eq!(v[0].field(run_font.key()), (!font_first).then_some(&system));
          assert_eq!(
             v[0].field(Prop::COLOR.key()),
             Some(&color(if font_first {
@@ -756,6 +846,88 @@ mod tests {
          a.set(if font_first { "theme" } else { "font" }, None);
          assert_eq!(get(&a.refresh(&m), 7, runs), Some(&raw));
       }
+   }
+
+   #[test]
+   fn notification_runs_keep_host_weight_code_and_inline_images() {
+      let (mut m, mut a) = (Mirror::default(), Accents::default());
+      a.enable_system_font("font");
+      let text = |s: &str| Value::Str(s.into());
+      let normal = Value::Map(vec![
+         ("text".into(), text("notice")),
+         ("bold".into(), Value::Bool(true)),
+      ]);
+      let special = [
+         Value::Map(vec![("text".into(), text("inherits the title weight"))]),
+         Value::Map(vec![("code".into(), Value::Bool(true))]),
+         Value::Map(vec![("font".into(), text("aiglyphs"))]),
+         Value::Obj(vec![(crate::prop!("image").key(), Value::Obj(vec![]))]),
+      ];
+      let mut data = vec![normal.clone()];
+      data.extend_from_slice(&special);
+      let spans = crate::prop!("spans");
+      let raw = Value::Arr(data);
+      let ops = send(&mut m, &mut a, vec![create(12, ViewKind::Text, vec![(
+         spans,
+         raw.clone(),
+      )])]);
+      let Some(Value::Arr(records)) = get(&ops, 12, spans) else {
+         panic!()
+      };
+      assert_eq!(records[1..], special);
+      assert_eq!(
+         run_field(&records[0], crate::prop!("font")),
+         Some(&text("sans-serif"))
+      );
+      assert_eq!(
+         run_field(&records[0], crate::prop!("bold")),
+         Some(&Value::Bool(true))
+      );
+      a.set("font", None);
+      assert_eq!(get(&a.refresh(&m), 12, spans), Some(&raw));
+   }
+
+   #[test]
+   fn canvas_button_remaps_fill_words_and_replays_edits_without_coloring_geometry() {
+      let (mut m, mut a) = (Mirror::default(), Accents::default());
+      a.set("theme", Some(DARK));
+      let brand = 0xFF58_65F2_u32.cast_signed();
+      let source = vec![258, brand, 1040, brand, 0, 0, 0];
+      let ops = send(&mut m, &mut a, vec![
+         create(12, ViewKind::View, vec![(
+            Prop::ROLE,
+            Value::Str("button".into()),
+         )]),
+         create(13, ViewKind::Canvas, vec![(
+            canvas::DRAW,
+            Value::Words(source.clone()),
+         )]),
+         Op::Children {
+            id:  12,
+            ids: vec![13],
+         },
+      ]);
+      let Some(Value::Words(painted)) = get(&ops, 13, canvas::DRAW) else {
+         panic!()
+      };
+      assert_eq!(painted[1], DARK.primary.cast_signed());
+      assert_eq!(painted[3], brand);
+      let edited = send(&mut m, &mut a, vec![Op::Update {
+         id:    13,
+         props: vec![(canvas::EDITS, Value::Words(vec![6, 42]))],
+      }]);
+      let Some(Value::Words(painted)) = get(&edited, 13, canvas::DRAW) else {
+         panic!()
+      };
+      assert_eq!(painted[1], DARK.primary.cast_signed());
+      assert_eq!(painted[6], 42);
+      a.set("theme", None);
+      let mut expected = source;
+      expected[6] = 42;
+      assert_eq!(
+         get(&a.refresh(&m), 13, canvas::DRAW),
+         Some(&Value::Words(expected))
+      );
    }
 
    #[test]
