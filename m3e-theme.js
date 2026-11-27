@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.12
+// @version 0.11.13
 // @author onichan0923
 // @enabled false
 // @bridge
@@ -133,7 +133,8 @@
     let inferredSend = null;
     let pickedMessage = null, editingMessage = null, editLayer = null, pendingDialog = 0;
     const menuTargets = /* @__PURE__ */ new Map();
-    let joinedBar = null;
+    let joinedBar = null, replyTarget = null;
+    const replyPaints = /* @__PURE__ */ new Map();
     let dialogWatch = null;
     const seenPanels = /* @__PURE__ */ new Map();
     const layouts = /* @__PURE__ */ new Map();
@@ -190,10 +191,10 @@
         lastNativeAt = Date.now();
       }
     }
-    function rememberLayout(name, root) {
+    function rememberLayout(name, root, depth = 5) {
       if (!recordLayouts || !root) return;
       let budget = 90;
-      function shape(n, depth) {
+      function shape(n, depth2) {
         if (!n || budget-- <= 0) return "\u2026";
         const aid = n.accessibilityId || "";
         const known = [
@@ -215,9 +216,9 @@
           surface.height > 0 && surface.height <= 80 && Math.ceil(surface.height)
         ].filter(Boolean).join("+") : "";
         const label = [n.kind || surface?.kind || "?", known, flags, n.children.length].filter((x) => x !== "").join("/");
-        return depth && n.children.length ? [label, ...children(n).slice(0, 12).map((c) => shape(c, depth - 1))] : label;
+        return depth2 && n.children.length ? [label, ...children(n).slice(0, 12).map((c) => shape(c, depth2 - 1))] : label;
       }
-      layouts.set(name, shape(root, 5));
+      layouts.set(name, shape(root, depth));
     }
     function parent(node) {
       return node && node.parent != null ? ui.node(node.parent) : null;
@@ -353,7 +354,7 @@
       }
       return null;
     }
-    function styleComposer(input) {
+    function styleComposer(input, knownContext) {
       applyNativePalette();
       let group = parent(input), bar = null, buttons = [];
       for (let depth = 0; group && depth < 5; depth++, group = parent(group)) {
@@ -367,8 +368,13 @@
       if (!bar) return;
       rememberLayout("composer", parent(parent(bar)) || parent(bar) || bar);
       const cancel = ui.find(contextCancel).map((id) => ui.node(id)).find((n) => n && commonFrame(n, bar));
-      ui.update(bar.id, { ...plainSurface, blur: null, background: conversation.control, clip: true, ...barRadii(cancel ? 0 : 20, 20) });
-      if (cancel) joinedBar = { bar: bar.id, cancel: cancel.id };
+      const contextBar = cancel && (knownContext?.id === cancel.id || paintContextBar(cancel));
+      ui.update(bar.id, { ...plainSurface, blur: null, background: conversation.control, clip: true, ...barRadii(contextBar ? 0 : 20, 20) });
+      if (contextBar) {
+        const entered = joinedBar?.cancel !== cancel.id;
+        joinedBar = { bar: bar.id, cancel: cancel.id };
+        if (entered) refreshReplyRows();
+      }
       paintDock(bar);
       const cleared = /* @__PURE__ */ new Set();
       for (const control of [input, ...buttons]) {
@@ -969,10 +975,127 @@
           ui.update(n.id, { background: 0, bg: 0, color: checked ? palette.onAccent : palette.ink });
       });
     }
-    function refreshTabs(tab) {
-      for (let n = parent(tab), d = 0; n && d < 4 && n.id !== ui.root(); n = parent(n), d++) {
-        if (n.accessibilityId === "social-tabs" || original(n)?.role === "tablist" || children(n).filter((c) => original(c)?.role === "tab").length === 2) {
-          paintTabs(n);
+    const profilePager = "profile-tab-pages";
+    let profileSelection = null;
+    let profileFace = null;
+    function profileTabs(pager) {
+      const frame = parent(pager), column = parent(frame);
+      if (!frame || !column) return null;
+      const container = children(column)[column.children.indexOf(frame.id) - 1];
+      let rail = container;
+      for (let depth = 0; rail && depth < 4; depth++) rail = ui.node(rail.children[0]);
+      if (!rail) return null;
+      const entries = children(rail), indicator = entries.pop();
+      if (!indicator || interactive(indicator) || entries.length < 2 || !entries.every((n) => actionLabel(n) && (actionIn(n) || original(n)?.role === "tab"))) return null;
+      return { column, container, rail, entries, indicator };
+    }
+    function neutralSurface(color) {
+      const rgb = [color >>> 16 & 255, color >>> 8 & 255, color & 255];
+      return Math.max(...rgb) - Math.min(...rgb) <= 18;
+    }
+    function defaultProfile(column, actions) {
+      const primary = actions && original(actionIn(ui.node(actions.children[0])));
+      const face = primary?.fill ?? primary?.background;
+      if (primary?.gradient || !primary?.brandFill && face >>> 24 >= 220 && !neutralSurface(face)) return false;
+      for (let n = column, d = 0; n && d < 8 && n.id !== ui.root(); n = parent(n), d++) {
+        const shape = original(n);
+        if (shape?.gradient) return false;
+        const color = shape?.fill ?? shape?.background ?? shape?.bg;
+        if (color >>> 24 >= 220) {
+          return neutralSurface(color);
+        }
+        if (n.accessibilityId === "profile-sheet") break;
+      }
+      return primary?.brandFill === true;
+    }
+    function clearProfileFace() {
+      if (profileFace) profileFace.remove();
+      profileFace = null;
+    }
+    function profileButton(button) {
+      const label = actionLabel(button), radius = original(button)?.topLeft || 8;
+      paintButton(button, palette.accent, palette.onAccent, label);
+      if (!ui.mount || !label) return;
+      const branch = childOf(label, button.id);
+      if (!branch) return;
+      if (profileFace?.button === button.id && profileFace.child === branch.id && profileFace.color === palette.accent && (!profileFace.remove.isMounted || profileFace.remove.isMounted())) return;
+      clearProfileFace();
+      const remove = ui.mount(
+        button.id,
+        switchFace({ width: "fill", height: "fill", radius, background: palette.accent }),
+        { before: "start" }
+      );
+      profileFace = { button: button.id, child: branch.id, color: palette.accent, remove };
+    }
+    function paintProfile(pager, index) {
+      if (recordLayouts) {
+        const frame = parent(pager), column = parent(frame);
+        const before = column && children(column)[column.children.indexOf(frame.id) - 1];
+        if (before) rememberLayout("profile-tabs", before, 9);
+      }
+      const parts = profileTabs(pager);
+      const actions = parts && findProfileActions(parts.container);
+      if (!parts || !defaultProfile(parts.column, actions)) {
+        if (profileSelection?.pager === pager?.id) {
+          clearProfileFace();
+          profileSelection = null;
+        }
+        return;
+      }
+      const { rail, entries, indicator } = parts;
+      let active = entries.findIndex((n) => original(n)?.selected === true || n.checked === true);
+      if (Number.isInteger(index) && index >= 0 && index < entries.length) active = index;
+      else if (active < 0) active = profileSelection?.pager === pager.id && profileSelection.first === entries[0].id ? profileSelection.index : 0;
+      profileSelection = { pager: pager.id, first: entries[0].id, index: active };
+      ui.update(rail.id, { ...plainSurface, background: conversation.control, radius: 999, clip: true });
+      ui.update(indicator.id, { opacity: 0 });
+      entries.forEach((tab, i) => {
+        const selected = active === i, ink = selected ? palette.onAccent : palette.ink;
+        const inset = original(tab)?.padding;
+        ui.update(tab.id, {
+          ...plainSurface,
+          background: selected ? palette.accent : 0,
+          radius: 999,
+          minHeight: 36,
+          padding: [inset?.[0] || 0, 0, inset?.[2] || 0, 0],
+          align: "center",
+          justify: "center"
+        });
+        const label = actionLabel(tab);
+        for (let n = parent(label); n && n.id !== tab.id; n = parent(n))
+          ui.update(n.id, { ...plainSurface, padding: 0, align: "center", justify: "center", gravity: "center" });
+        ui.update(label.id, { worklet: null, color: ink, textAlign: "center", gravity: "center" });
+      });
+      if (actions) {
+        rememberLayout("profile-actions", actions, 7);
+        const [button, ...shortcuts] = children(actions).map(actionIn);
+        profileButton(button);
+        for (const action2 of shortcuts) paintButton(action2, conversation.control, palette.ink);
+      }
+    }
+    function findProfileActions(container) {
+      for (let branch = container, d = 0; d < 7 && branch; branch = parent(branch), d++) {
+        const host = parent(branch);
+        if (!host || host.id === ui.root()) break;
+        for (const sibling of children(host).slice(0, host.children.indexOf(branch.id))) {
+          const row = descendants(sibling, 5, 70).find((n) => {
+            if (!original(n)?.horizontal || n.children.length !== 3) return false;
+            const actions = children(n).map(actionIn);
+            return actions.every(Boolean) && actionLabel(actions[0]) && actions.slice(1).every((a) => !actionLabel(a) && descendants(a, 3, 8).some((c) => kindOf(c) === "image"));
+          });
+          if (!row) continue;
+          return row;
+        }
+        if (host.accessibilityId === "profile-sheet") break;
+      }
+    }
+    function refreshTabs(tab, pressed = false) {
+      for (const id of ui.find(profilePager)) {
+        const pager = ui.node(id), parts = profileTabs(pager);
+        if (!parts) continue;
+        const index = parts.entries.findIndex((n) => n.id === tab?.id || childOf(tab, n.id));
+        if (index >= 0) {
+          paintProfile(pager, pressed ? index : void 0);
           return;
         }
       }
@@ -1784,7 +1907,70 @@
         ui.update(text.children[1], { color: palette.muted });
       }
     }
+    function clearReplyPaint() {
+      for (const [id, entry] of replyPaints) {
+        const n = ui.node(id);
+        if (!n || n.parent !== entry.parent || n.accessibilityId !== entry.aid) continue;
+        const surface = original(n);
+        if (surface) ui.update(id, { background: surface.background ?? 0, bg: surface.bg ?? 0 });
+      }
+      replyPaints.clear();
+    }
+    function replyWash(color) {
+      if (!(color >>> 24)) return false;
+      const r = color >>> 16 & 255, g = color >>> 8 & 255, b = color & 255;
+      return b - g >= 12 && b > r + 5 && g <= r + 18 && (r < 110 || color >>> 24 < 150);
+    }
+    function paintReplyRow(row, box, message) {
+      if (!row || !box) return;
+      const active = joinedBar && ui.node(joinedBar.cancel) && !editingMessage;
+      const selected = active && (!replyTarget || replyTarget === message);
+      const fills = [];
+      function inspect(node, decoration) {
+        const shape = original(node);
+        if (!shape) return;
+        if (decoration && (kindOf(node) === "swipeFill" || (shape.brandFill || replyWash(shape.fill)) && (shape.height >= 24 && shape.height <= 60 || shape.topLeft >= 12 && shape.topLeft <= 30))) {
+          const props = kindOf(node) === "swipeFill" ? { color: palette.accent } : { background: palette.accent, bg: 0 };
+          ui.update(node.id, props);
+          for (const icon of descendants(node, 3, 8)) if (kindOf(icon) === "image") ui.update(icon.id, { tint: palette.onAccent });
+        } else if (selected && (replyWash(shape.background) || replyWash(shape.bg))) fills.push(node);
+      }
+      let branch = box;
+      while (branch && branch.id !== row.id) {
+        const host = parent(branch);
+        if (!host) break;
+        inspect(host, false);
+        if (!original(host)?.horizontal || host.id === row.id) {
+          for (const layer of children(host)) {
+            if (layer.id === branch.id || !["stack", "swipeFill"].includes(kindOf(layer)) && (layer.children.length || interactive(layer))) continue;
+            const parts = descendants(layer, 4, 20);
+            if (parts.some((n) => /^(?:message[.:]|embed:|attachment:)/.test(n.accessibilityId || "") || ["text", "markup"].includes(kindOf(n)))) continue;
+            for (const n of parts) inspect(n, true);
+          }
+        }
+        branch = host;
+      }
+      for (const n of fills) {
+        replyPaints.set(n.id, { parent: n.parent, aid: n.accessibilityId });
+        ui.update(n.id, { background: conversation.body, bg: 0 });
+      }
+      if (selected && (fills.length || replyTarget === message)) {
+        const owner = bubbles.get(box.id);
+        if (owner) owner.replyHighlighted = true;
+        ui.update(box.id, { background: palette.pressed });
+      }
+    }
+    function refreshReplyRows() {
+      for (const [id, entry] of bubbles) {
+        const box = ui.node(id), marker = ui.node(entry.marker), row = ui.node(entry.row);
+        if (box && marker?.accessibilityId === entry.name && row && childOf(box, row.id))
+          paintReplyRow(row, box, entry.name.split(":")[1]);
+      }
+    }
     function clearEditing() {
+      const restore = joinedBar && !editingMessage;
+      replyTarget = null;
+      clearReplyPaint();
       if (editLayer) editLayer.remove();
       editLayer = null;
       editingMessage = null;
@@ -1793,34 +1979,59 @@
         if (bar) ui.update(bar.id, barRadii(20, 20));
         joinedBar = null;
       }
-    }
-    function styleContext(cancel) {
-      let lane = parent(cancel);
-      for (let i = 0; i < 3 && shellNode(lane) && lane.children.length === 1; i++) lane = parent(lane);
-      if (!shellNode(lane) || lane.children.length > 4 || contains(lane, (n) => n.accessibilityId === "composer")) return;
-      ui.update(lane.id, { ...flat, background: conversation.control, ...barRadii(20, 0) });
-      for (const n of children(lane)) {
-        if (n.id === cancel.id || contains(n, (c) => c.id === cancel.id)) continue;
-        const label = n.children.length === 1 ? ui.node(n.children[0]) : n;
-        if (label && !label.children.length && (!label.kind || label.kind === "text")) ui.update(label.id, { color: palette.accent });
+      if (restore) {
+        for (const [id, entry] of bubbles) {
+          if (entry.replyHighlighted && ui.node(entry.marker)?.accessibilityId === entry.name) {
+            ui.update(id, { background: entry.replyBase });
+            entry.replyHighlighted = false;
+          }
+        }
       }
-      tintIcon(cancel, palette.accent);
+    }
+    function paintContextBar(cancel) {
+      let lane, branch = cancel;
+      for (let i = 0; branch && i < 5; i++, branch = parent(branch)) {
+        const up = parent(branch);
+        if (!shellNode(up) || up.children.length > 4 || up.id === ui.root()) return null;
+        const siblings = children(up);
+        if (siblings.length !== 2 || siblings[1].id !== branch.id) continue;
+        const leading2 = descendants(siblings[0], 3, 12);
+        if (leading2.some((n) => ["image", "input", "list"].includes(kindOf(n))) || !leading2.some((n) => ["text", "markup"].includes(kindOf(n)) || !kindOf(n) && !n.children.length)) continue;
+        lane = up;
+        break;
+      }
+      if (!lane) return null;
+      rememberLayout("edit-bar", lane);
+      const paint = { ...plainSurface, blur: null, background: conversation.control, ...barRadii(20, 0), clip: true };
+      ui.update(lane.id, paint);
+      const leading = ui.node(lane.children[0]);
+      for (const n of descendants(lane, 5, 28)) {
+        if (n.id === lane.id) continue;
+        const kind = kindOf(n);
+        if (kind === "view" || kind === "stack") ui.update(n.id, { ...plainSurface, blur: null });
+        if (kind === "text" || kind === "markup") ui.update(n.id, { color: childOf(n, leading.id) || n.id === leading.id ? palette.ink : palette.accent });
+        if (kind === "image") ui.update(n.id, { tint: palette.accent });
+      }
       const frame = parent(lane);
-      rememberLayout("edit-bar", frame);
       if (shellNode(frame) && frame.children.length === 2 && frame.children[0] === lane.id) {
         const divider2 = ui.node(frame.children[1]);
-        if (divider2 && !divider2.accessibilityId && !divider2.children.length && shellNode(divider2)) {
-          ui.update(frame.id, { ...flat, background: conversation.control, ...barRadii(20, 0) });
+        if (divider2 && !divider2.accessibilityId && !divider2.children.length && shellNode(divider2) && original(divider2)?.height > 0 && original(divider2).height <= 2) {
+          ui.update(frame.id, paint);
           ui.update(divider2.id, { ...flat, height: 0, minHeight: 0, opacity: 0 });
         }
       }
+      return lane;
+    }
+    function styleContext(cancel) {
+      const lane = paintContextBar(cancel);
+      if (!lane) return;
       forLive("composer", (input) => {
         if (!commonFrame(lane, input)) return;
         if (editingMessage) {
           draftInput = input.id;
           hasDraft = true;
         }
-        styleComposer(input);
+        styleComposer(input, cancel);
       });
       paintEditedMessage(cancel);
     }
@@ -1922,26 +2133,35 @@
     }
     function galleryLayout(root) {
       if (!root?.children.length) return null;
-      let budget = 72;
+      let budget = 96;
       function read(node, depth, mediaSlot) {
-        if (!node || depth > 8 || --budget < 0) return null;
-        const shape = original(node), kind = node.kind || shape?.kind, name = node.accessibilityId || "";
-        if (name && !/^(?:message\.attachments?|attachment|media|image|mosaic|embed-gallery|gallery|embed)(?:[:._-]|$)/i.test(name)) return null;
-        if (/emoji|avatar|icon|badge|footer|author|reaction/i.test(name) || shape?.height != null && shape.height <= 40) return null;
-        const sized = mediaSlot || shape?.height > 40 || /^(?:attachment|message\.attachments?|mosaic|embed-gallery|gallery)/i.test(name);
-        if (kind === "image") return sized ? { id: node.id, cells: [] } : null;
-        if (kind !== "view" && kind !== "stack" || !node.children.length || node.children.length > 10) return null;
-        const row = kind === "view" && shape?.horizontal;
+        if (!node || depth > 10 || --budget < 0) return null;
+        const shape = original(node), kind = kindOf(node), name = node.accessibilityId || "";
+        if (/^(?:message[.](?:author|avatar|reply|timestamp)|navigation[.])|emoji|badge|reaction/i.test(name)) return null;
+        if (shape?.height > 0 && shape.height <= 40) return null;
+        const namedMedia = /^(?:attachment|message[.]attachments?|mosaic|embed-gallery|gallery)(?:[:._-]|$)/i.test(name);
+        const sized = mediaSlot || shape?.height > 40 || namedMedia;
+        if (kind === "image") return { id: node.id, cells: [], sized };
+        if (!node.children.length) return sized && ["other", "zoom", "video", "player"].includes(kind) ? { id: node.id, cells: [], sized } : null;
+        if (!["view", "stack", "other", "flow", "zoom"].includes(kind) || node.children.length > 16) return null;
+        const items = children(node), row = !!shape?.horizontal || kind === "flow";
         const cells = [];
-        for (const child of children(node)) {
-          if (row && !child.accessibilityId && kindOf(child) === "view" && !child.children.length && !interactive(child)) continue;
+        let evidence = sized;
+        for (const child of items) {
           const cell = read(child, depth + 1, sized);
-          if (cell) cells.push(cell);
-          else if (kind !== "stack") return null;
+          if (cell) {
+            cells.push(cell);
+            evidence ||= cell.sized;
+            continue;
+          }
+          if (kind === "stack" || row && kindOf(child) === "view" && !child.children.length && !interactive(child) && !child.accessibilityId) continue;
+          return null;
         }
         if (!cells.length) return null;
-        if (kind === "stack" && cells.length > 1 && !(interactive(node) || /^attachment[.:]/i.test(name))) return null;
-        return { id: node.id, cells, row, gallery: row && cells.length > 1 || cells.some((c) => c.gallery) };
+        const peers = row && cells.length > 1 && (sized || cells.every((c) => c.sized) || items.filter(interactive).length === cells.length);
+        if (row && cells.length > 1 && !peers) return null;
+        if (kind === "stack" && cells.length > 1 && !interactive(node) && !namedMedia && !sized) return null;
+        return { id: node.id, cells, sized: evidence, row, gallery: peers || cells.some((c) => c.gallery) };
       }
       const layout = read(root, 0, false);
       return layout?.gallery ? layout : null;
@@ -2022,6 +2242,14 @@
       return "content";
     }
     const bubbles = /* @__PURE__ */ new Map();
+    const albumWidths = /* @__PURE__ */ new Map();
+    function constrainAlbum(owner, width) {
+      if (!(width > 0) || !Number.isFinite(width)) return;
+      for (const id of owner.parts) {
+        const item = ui.node(id);
+        if (item?.parent === owner.box) ui.update(id, { width, maxWidth: width, minWidth: 0 });
+      }
+    }
     const rowBoxes = /* @__PURE__ */ new Map();
     function messageGroup(rowId) {
       if (rowId == null) return 0;
@@ -2114,6 +2342,7 @@
     }
     function releaseBubble(boxId) {
       const owner = bubbles.get(boxId);
+      if (albumWidths.get(owner?.marker)?.box === boxId) albumWidths.delete(owner.marker);
       const active = rowBoxes.get(owner?.row);
       if (active === boxId) rowBoxes.delete(owner.row);
       restoreRowWash(owner?.paints, active === boxId ? null : bubbles.get(active)?.paints);
@@ -2207,10 +2436,21 @@
       }
       const body = box.id === anchor.id ? null : childOf(anchor, box.id);
       const parts = children(box);
+      if (recordLayouts && parts.length > 1) {
+        const candidates = parts.slice(body ? box.children.indexOf(body.id) + 1 : 0);
+        for (const item of candidates) {
+          const leaves = descendants(item, 8, 60);
+          if (leaves.filter((n) => kindOf(n) === "image" && !(original(n)?.height <= 40 && original(n)?.height != null)).length >= 2)
+            rememberLayout("message-gallery", item, 9);
+        }
+      }
       let fitted = false;
+      const albums = [];
       for (const part of parts.slice(body ? box.children.indexOf(body.id) : 0)) {
         if (part.id === body?.id && marker.id !== anchor.id) continue;
-        if (fitMediaBranch(part, 0, { skip: cardIds })) fitted = true;
+        const result = fitMediaBranch(part, 0, { skip: cardIds });
+        if (result) fitted = true;
+        if (result === "gallery" && part.id !== marker.id) albums.push(part.id);
       }
       const media = fitted || hasCard || photo || children(anchor).some(messageMedia) || contains(box, (n) => /^(?:attachment[.:]|message\.attachments?:)/.test(n.accessibilityId || ""), 4);
       for (const [oldBox, owner] of bubbles) {
@@ -2219,14 +2459,24 @@
       const previous = bubbles.get(box.id);
       if (previous && previous.row !== row.id && rowBoxes.get(previous.row) === box.id) rowBoxes.delete(previous.row);
       const { paints, tint } = rowWash(box, row, previous?.paints);
-      bubbles.set(box.id, { marker: marker.id, name: marker.accessibilityId, list: anchor.list, row: row.id, paints });
+      const replyBase = tint == null ? conversation.bubble : mix(conversation.bubble, tint, (tint >>> 24) / 255);
+      bubbles.set(box.id, { replyBase, marker: marker.id, name: marker.accessibilityId, list: anchor.list, row: row.id, paints });
       rowBoxes.set(row.id, box.id);
       ui.update(box.id, {
-        background: tint == null ? conversation.bubble : mix(conversation.bubble, tint, (tint >>> 24) / 255),
+        background: replyBase,
         radius: 16,
         clip: media || tint != null,
         padding: [10, 5, 10, media ? 10 : 5]
       });
+      if (albums.length && marker.parent === box.id && marker.accessibilityId.startsWith(messageMatch.prefix)) {
+        const prior = albumWidths.get(marker.id);
+        const width = prior?.box === box.id && prior.name === marker.accessibilityId ? prior.width : null;
+        const owner = { box: box.id, name: marker.accessibilityId, parts: albums, width };
+        albumWidths.set(marker.id, owner);
+        ui.update(marker.id, { width: "fill" });
+        constrainAlbum(owner, width);
+      } else albumWidths.delete(marker.id);
+      paintReplyRow(row, box, id);
       refreshJoins(list, row.id);
     }
     const reactionRows = /* @__PURE__ */ new Map();
@@ -2662,6 +2912,8 @@
       const textField = { ...flat, radius: 0, color: palette.ink, selectionColor: palette.accent, placeholderColor: palette.muted };
       for (const page of inboxPages) patch(page, { ...flat, background: conversation.body });
       rules.push(ui.patchProps(requestActions, { addOn: ["appeared"] }));
+      rules.push(ui.patchProps(messageMatch, { addOn: ["layout"] }));
+      rules.push(ui.patchProps(profilePager, { addOn: ["appeared"] }));
       patch("composer", textField);
       patch(searchId, textField);
       patch("search.entry", { background: 0, activeBackground: palette.ripple, radius: 20, activeRadius: 20.5 });
@@ -2737,7 +2989,7 @@
       copyLayout: {
         type: "button",
         title: "\u8907\u88FD\u4ECB\u9762\u7D50\u69CB",
-        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.12", layouts: Object.fromEntries(layouts) }))
+        onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.13", layouts: Object.fromEntries(layouts) }))
       }
     });
     recordLayouts = settings.inspect === true;
@@ -2830,9 +3082,11 @@
       ...["guild-sheet", "guild-sheet-name", "tab-invite", "tab-settings"].map((n) => [n, guildOptions]),
       ...[...inboxPages, ...inboxRows, requestActions].map((n) => [n, inbox]),
       ["social-tabs", paintTabs],
+      [profilePager, paintProfile],
       ...["social-sensitive", "social-spam", "social-sharing", "social-servers", "social-pages", "social-pager", "privacy-request", "privacy-profile"].map((n) => [n, preferenceSection])
     ];
     for (const [match, visit] of extraSurfaces) watch(match, visit);
+    for (const hint of ["profile-sheet", "profile-tabs", "profile-tab-pager"]) watch(hint, () => forLive(profilePager, paintProfile));
     watch("ignore", (n) => {
       for (let p = parent(n), d = 0; p && d < 8; p = parent(p), d++) {
         if (p.accessibilityId?.startsWith(requestActions.prefix)) {
@@ -2851,21 +3105,59 @@
     watch({ prefix: "phoenix-" }, detailRow);
     for (const name of detailMatches) watch(name, detailRow);
     for (const match of sidebarMatches) watch(match, styleSidebar);
-    watch({ prefix: "embed:" }, (node) => {
-      styleNamedEmbed(node);
+    function refreshMessageMedia(node) {
       const row = node.list != null && childOf(node, node.list);
       if (!row || node.sheet != null) return;
       const id = ui.findDown(row.id, messageMatch, 10);
       const content = id == null ? null : ui.node(id);
       if (content) paintBubble(content, paintEmbeds(content));
+      else {
+        const author = ui.findDown(row.id, { prefix: "message.author:" }, 9);
+        if (author != null) photoOnly(ui.node(author));
+      }
+    }
+    watch({ prefix: "embed:" }, (node) => {
+      styleNamedEmbed(node);
+      refreshMessageMedia(node);
     });
+    for (const match of [{ prefix: "attachment:" }, { prefix: "message.attachments:" }, "mosaic", "embed-gallery"])
+      watch(match, refreshMessageMedia);
     for (const name of ["date-divider", "unread-divider"]) watch(name, clearLabelRules);
     watch(messageMatch, (n) => {
       styleChat(n);
       if (pendingDialog > Date.now() && n.list == null && n.sheet == null) maybeDialog(n);
     });
+    watchers.push(ui.onEvent("layout", (e) => {
+      const owner = albumWidths.get(e.node);
+      if (!owner || e.accessibilityId !== owner.name || ui.node(e.node)?.parent !== owner.box) return;
+      const width = e.payload?.width;
+      if (width > 0 && Number.isFinite(width) && owner.width !== width) {
+        owner.width = width;
+        constrainAlbum(owner, width);
+      }
+    }));
+    watchers.push(ui.onEvent("rowSwipe", (e) => {
+      if (!e.messageId) return;
+      clearEditing();
+      replyTarget = e.messageId;
+      if (recordLayouts) for (const info of bubbles.values()) {
+        if (info.name.endsWith(":" + replyTarget)) {
+          rememberLayout("reply-swipe", ui.node(info.row), 8);
+          break;
+        }
+      }
+      forLive(contextCancel, styleContext);
+    }));
     watchers.push(ui.onEvent("rowLongPress", (e) => {
       pickedMessage = e.messageId || null;
+      if (recordLayouts && pickedMessage) {
+        for (const info of bubbles.values()) {
+          if (info.name.endsWith(":" + pickedMessage)) {
+            rememberLayout("selected-message", ui.node(info.row), 10);
+            break;
+          }
+        }
+      }
     }));
     watchers.push(ui.onEvent("longPress", (e) => {
       const match = /^message\.(?:content|author|avatar|timestamp):(\d+)$/.exec(e.accessibilityId || "");
@@ -2873,11 +3165,24 @@
     }));
     watchers.push(ui.onEvent("press", (e) => {
       const target = e.accessibilityId || menuTargets.get(e.node);
+      const tapped = ui.node(e.node);
+      if (tapped && profileSelection) {
+        const pager = ui.node(profileSelection.pager);
+        const parts = pager?.accessibilityId === profilePager && profileTabs(pager);
+        if (!parts) {
+          clearProfileFace();
+          profileSelection = null;
+        } else if (childOf(tapped, parts.rail.id)) refreshTabs(tapped, true);
+      }
       if (target === "guild.menu" || target === "guild-title") openingGuild();
       else stopGuildWatch();
       if (target === "composer.attachments" || target === "composer.expressions") openingPicker();
       else stopPickerWatch();
-      if (target === "message.actions.edit") {
+      if (target === "message.actions.reply") {
+        clearEditing();
+        replyTarget = e.messageId || pickedMessage;
+        forLive(contextCancel, styleContext);
+      } else if (target === "message.actions.edit") {
         clearEditing();
         editingMessage = e.messageId || pickedMessage;
         forLive(contextCancel, styleContext);
@@ -2887,7 +3192,17 @@
         clearEditing();
       } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
     }));
-    watchers.push(ui.onEvent("pageSettle", () => {
+    function profilePage(event) {
+      forLive(profilePager, (pager) => {
+        const target = ui.node(event.node);
+        const isPager = target && (target.id === pager.id || target.accessibilityId === "profile-tab-pager" && (childOf(target, pager.id) || childOf(pager, target.id)));
+        paintProfile(pager, isPager ? event.payload?.index ?? event.payload : void 0);
+      });
+    }
+    watchers.push(ui.onEvent("pageSelect", profilePage));
+    watchers.push(ui.onEvent("pageSettle", (event = {}) => {
+      if (profileFace && !ui.node(profileFace.button)?.children.includes(profileFace.child)) clearProfileFace();
+      profilePage(event);
       clearSurfaceTags();
       for (const id of categoryInsets.keys()) {
         const list2 = ui.node(id);
@@ -2944,7 +3259,7 @@
         if (candidate && candidate.list == null && !menuAncestor(candidate) && (candidate.kind === "modal" || /^delete-message$|^alert-|^message\.(content|author|avatar|timestamp):/.test(name || ""))) maybeDialog(candidate);
       }
       if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
-      if (name && (name === "social-tabs" || name === "create-thread" || name === "empty-chat" || name === "guild-sheet" || dmControls.includes(name) || inboxPages.includes(name) || inboxRows.includes(name) || name.startsWith("request-actions-"))) {
+      if (name && (name === profilePager || name === "social-tabs" || name === "create-thread" || name === "empty-chat" || name === "guild-sheet" || dmControls.includes(name) || inboxPages.includes(name) || inboxRows.includes(name) || name.startsWith("request-actions-"))) {
         const item = ui.node(event.node);
         if (item?.accessibilityId === name) for (const [match, visit] of extraSurfaces) {
           if (match === name || match.prefix && name.startsWith(match.prefix)) visit(item);
@@ -3019,6 +3334,7 @@
       stopPickerWatch();
       clearPickerCorners(true);
       clearSurfaceTags(true);
+      clearProfileFace();
       for (const id of categoryInsets.keys()) restoreCategory(id);
       stopGuildWatch();
       removeSkins(true);
