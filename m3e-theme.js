@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.6.0
+// @version 0.6.1
 // @author onichan0923
 
 (() => {
@@ -9,12 +9,12 @@
     dark: {
       canvas: 0xff22171a, sheet: 0xff291e21, row: 0xff35292c, pressed: 0xff49373e,
       ink: 0xfff1dfe3, muted: 0xffcfbfc2, accent: 0xffefb3c5,
-      onAccent: 0xff4b2733, track: 0xff715660, handle: 0xff9d858d, ripple: 0x28efb3c5,
+      onAccent: 0xff4b2733, track: 0xff4d4145, handle: 0xffa38c93, ripple: 0x28efb3c5,
     },
     light: {
-      canvas: 0xfffff8f8, sheet: 0xfffcf0f1, row: 0xfff2e6e8, pressed: 0xffe9d5dc,
-      ink: 0xff291c20, muted: 0xff6a555d, accent: 0xff814d5f,
-      onAccent: 0xffffffff, track: 0xffd6b6c2, handle: 0xffa7828f, ripple: 0x20814d5f,
+      canvas: 0xfffae9ed, sheet: 0xfffff6f7, row: 0xfffff8f8, pressed: 0xffefdee3,
+      ink: 0xff35292c, muted: 0xff68585d, accent: 0xff814d5f,
+      onAccent: 0xffffffff, track: 0xffe8dbe0, handle: 0xff827378, ripple: 0x20814d5f,
     },
   };
   const clearFill = {
@@ -60,15 +60,17 @@
     if (!scales) return fallback;
     const { accent1: a, neutral1: n, neutral2: v } = scales;
     const valid = (scale, tones) => scale && tones.every(tone => Number.isInteger(scale[tone]) && (scale[tone] >>> 24) === 255);
-    if (!valid(a, [100, 200, 400, 600, 700, 800]) || !valid(n, [0, 10, 100, 800, 900, 1000]) ||
-        !valid(v, [50, 100, 200, 300, 400, 500, 600, 700, 800, 900])) return fallback;
+    if (!valid(a, [100, 200, 600, 800, 900]) || !valid(n, [0, 50, 100, 800, 900]) ||
+        !valid(v, [100, 200, 400, 500, 700, 800])) return fallback;
+    // Settings uses a tonal page with brighter preference surfaces. Use N1
+    // for both elevations; N2 is the variant scale for outlines and labels.
+    const canvas = dark ? mix(n[900], a[900], 0.16) : mix(n[50], a[100], 0.20);
+    const row = dark ? mix(canvas, mix(n[800], a[800], 0.16), 0.72) : mix(n[0], canvas, 0.34);
     const accent = dark ? a[200] : a[600];
     return {
-      canvas: dark ? mix(n[900], n[1000], 0.28) : mix(n[10], n[0], 0.30),
-      sheet: dark ? n[900] : v[50], row: dark ? mix(v[900], v[800], 0.55) : v[100],
-      pressed: dark ? mix(v[800], a[400], 0.15) : mix(v[100], a[400], 0.18),
-      ink: dark ? n[100] : n[900], muted: dark ? v[200] : v[700],
-      accent, onAccent: dark ? a[800] : n[0], track: dark ? v[600] : v[300],
+      canvas, row, sheet: mix(canvas, row, dark ? 0.42 : 0.80), pressed: mix(row, accent, 0.12),
+      ink: dark ? mix(n[100], a[100], 0.14) : mix(n[800], a[800], 0.12), muted: dark ? v[200] : v[700],
+      accent, onAccent: dark ? a[800] : n[0], track: dark ? mix(v[800], v[700], 0.6) : v[100],
       handle: dark ? v[400] : v[500], ripple: ((accent & 0xffffff) | (dark ? 0x28000000 : 0x20000000)) >>> 0,
     };
   }
@@ -497,26 +499,33 @@
     const existing = switchSkins.get(track.id);
     if (existing && existing.knob === knob.id) return;
     if (existing) for (const remove of existing.remove) remove();
-    const off = palette.track, on = palette.accent;
-    // In a 56dp rail the thumb's center travels from 14 to 42. The stationary
-    // halves plus the two moving covers give a solid rail at BOTH endpoints.
-    // The 28dp uncovered window stays centered on the native thumb.
-    const face = switchFace({ width: 56, height: 32, radius: 16, clip: true, background: off }, [
-      switchFace({ width: 28, height: 32, translateX: 14, background: on }),
+    // The mirror exposes the native thumb's 28dp travel, but omits its
+    // checked value. Reveal the two faces with that same animation, including
+    // on first mount and for switches changed outside this plugin.
+    const offRail = () => switchFace({ width: 52, height: 32, radius: 16, background: palette.handle }, [
+      switchFace({ width: 48, height: 28, radius: 14, background: palette.track }),
     ]);
-    const art = [
-      switchFace({ width: 56, height: 32, translateX: -42, background: on }),
-      switchFace({ width: 56, height: 32, translateX: 42, background: off }),
-      switchFace({ width: 22, height: 22, radius: 11, background: palette.ink }),
-    ];
-    const base = ui.mount(track.id, face, { before: knob.id });
-    const cap = ui.mount(knob.id, switchFace({ width: 20, height: 20, clip: false }, art));
-    // At rest on the left, the tick is the exact color of the rail beneath it.
-    // The light/dark thumb slides under it on the right and reveals the tick.
-    const tick = ui.mount(track.id, { kind: "text", props: { text: "✓", color: off, fontSize: 14,
-      includeFontPadding: false, absolute: true, gravity: "center", translateX: 14,
-      pointerEvents: "none", accessibilityHidden: true } });
-    switchSkins.set(track.id, { knob: knob.id, remove: [base, cap, tick] });
+    const stroke = (width, x, y, angle) => switchFace({ width, height: 1.8, radius: 0.9,
+      translateX: x, translateY: y, rotation: angle, background: palette.accent });
+    const checkedThumb = switchFace({ width: 24, height: 24, radius: 12,
+      translateX: -2, background: palette.onAccent }, [
+      stroke(5.7, -3.4, 1.2, 45), stroke(11.3, 1.9, -0.8, -45),
+    ]);
+    // x = 24 splits the 52dp rail between the 16dp off and 24dp on thumbs.
+    const base = ui.mount(track.id, switchFace({ width: 52, height: 32, radius: 16, clip: true }, [
+      offRail(),
+      switchFace({ width: 16, height: 16, radius: 8, translateX: -10, background: palette.handle }),
+      switchFace({ width: 28, height: 32, translateX: 12, clip: true, background: palette.accent }, [checkedThumb]),
+    ]), { before: knob.id });
+    // The two masks ride the original knob. At x=0 the right mask finishes
+    // the outlined off rail. At x=28 the left mask finishes the primary rail.
+    const moving = ui.mount(knob.id, switchFace({ width: 2, height: 2, clip: false }, [
+      switchFace({ width: 52, height: 32, translateX: -25, background: palette.accent }),
+      switchFace({ width: 28, height: 32, translateX: 43, clip: true, background: palette.handle }, [
+        switchFace({ width: 52, height: 32, translateX: -12 }, [offRail()]),
+      ]),
+    ]));
+    switchSkins.set(track.id, { knob: knob.id, remove: [base, moving] });
   }
 
   function tintSwitch(row, toggle, checked) {
@@ -525,12 +534,17 @@
     switchOwners.set(toggle.track.id, row.id);
     // Some trees expose a Boolean on change; all expose the native thumb
     // position. Never change accessibilityChecked, translateX or the worklet.
-    const fill = checked === true ? palette.accent : checked === false ? palette.row : palette.track;
-    const edge = checked === false ? palette.muted : palette.accent;
-    const thumb = checked === true ? palette.onAccent : edge;
-    ui.update(toggle.track.id, { width: 56, height: 32, radius: 16, clip: true, align: "center",
-      padding: [4, 0, 4, 0], background: fill, borderColor: edge, borderWidth: ui.mount ? 0 : 1 });
-    ui.update(toggle.knob.id, { width: 20, height: 20, radius: 10, clip: false, background: thumb });
+    if (typeof ui.mount !== "function") {
+      if (typeof checked === "boolean") {
+        ui.update(toggle.track.id, { background: checked ? palette.accent : palette.track,
+          borderColor: palette.handle, borderWidth: checked ? 0 : 2 });
+        ui.update(toggle.knob.id, { background: checked ? palette.onAccent : palette.handle });
+      }
+      return;
+    }
+    ui.update(toggle.track.id, { width: 52, height: 32, radius: 16, clip: true, align: "center",
+      padding: 0, borderWidth: 0, background: palette.track });
+    ui.update(toggle.knob.id, { width: 2, height: 2, margin: [-6, 0, 0, 0], clip: false, background: 0 });
     skinSwitch(toggle.track, toggle.knob);
   }
 
@@ -1177,7 +1191,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.6.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.6.1", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
