@@ -1938,38 +1938,51 @@ if (phoenix.appearance) (() => {
     return false;
   }
 
-  // The guest measures attachments before the theme adds horizontal padding.
-  // Follow only the image path. Captions, actions and small overlay icons keep
-  // their own layout. A fixed-width stack also needs to fit its parent on Android.
-  function fitMediaBranch(node, depth = 0, sizedTile = false, inEmbed = false) {
-    if (!node || depth > 7) return false;
+  // A media tile takes its size from the image. The original preview height
+  // caps portrait shots; Android's drawable supplies the ratio when the
+  // padded column is narrower than a landscape image.
+  function fitMediaBranch(node, depth = 0, context = {}) {
+    if (!node || depth > 7) return null;
     const name = node.accessibilityId || "", shape = original(node), kind = kindOf(node);
     if (/avatar|emoji|badge|icon|reaction|reply|author|timestamp|footer/i.test(name) ||
-        (!inEmbed && /thumb/i.test(name))) return false;
-    if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return false;
-    const tall = shape?.height > 40;
+        (!context.inEmbed && /thumb/i.test(name))) return null;
+    if (name && !/^(?:message\.(?:content|body|attachments?)[:.]|embed:|attachment|media|image|activity|game)/i.test(name)) return null;
+    if (shape?.height != null && shape.height <= 40) return null;
+    const height = shape?.height ?? context.height;
+    const attachment = context.attachment || /^(?:message\.attachments?[:.]|attachment|media|image)|^embed:.*:image$/i.test(name);
     if (kind === "image") {
-      if (!tall && !(sizedTile && shape?.height == null)) return false;
-      // With a known tile height Android can keep the intrinsic aspect ratio.
-      // An image that takes its height from its stack must fill the stack.
-      ui.update(node.id, { width: shape?.height > 0 ? "wrap" : "fill", maxWidth: "100%", scale: "fit" });
-      return true;
+      if (height == null && !attachment) return null;
+      // Wrapped parents already supply a width limit. A percentage cap here
+      // would feed the stack's previous width back into its next measure.
+      const size = { width: "wrap", height: "wrap", maxWidth: null, maxHeight: height ?? null, scale: "fit" };
+      if (context.inStack) size.gravity = "center";
+      ui.update(node.id, size);
+      return "tile";
     }
-    if (!shellNode(node) || (shape?.height != null && shape.height <= 40)) return false;
+    if (!shellNode(node)) return null;
     if (shape?.horizontal && node.children.length > 1) {
-      // Allocate the width left by the stripe to the padded body. Skip inline
-      // thumbnail/header rows, including those nested below a named embed.
-      const body = inEmbed && stripedBody(node);
-      if (!body || !fitMediaBranch(body, depth + 1, false, true)) return false;
+      const body = context.inEmbed && stripedBody(node);
+      if (!body || !fitMediaBranch(body, depth + 1, { inEmbed: true })) return null;
       ui.update(body.id, { width: 0, flex: 1, minWidth: 0 });
-      return true;
+      return "content";
     }
-    let fitted = false;
-    for (const part of children(node)) {
-      if (fitMediaBranch(part, depth + 1, sizedTile || tall || /^(?:attachment|media|image)/i.test(name), inEmbed)) fitted = true;
+    const parts = children(node);
+    const childContext = { height, attachment, inEmbed: context.inEmbed, inStack: kind === "stack" };
+    let fitted = false, tile = false;
+    for (const part of parts) {
+      const result = fitMediaBranch(part, depth + 1, childContext);
+      if (result) fitted = true;
+      if (result === "tile") tile = true;
     }
-    if (fitted) ui.update(node.id, kind === "stack" ? { width: "fill" } : { maxWidth: "100%", minWidth: 0 });
-    return fitted;
+    if (!fitted) return null;
+    // A stack can also hold a spoiler or a play control over the picture.
+    // A column with captions or game actions keeps its own content width.
+    if (tile && (parts.length === 1 || kind === "stack")) {
+      ui.update(node.id, { width: "wrap", height: "wrap", maxWidth: null, minWidth: 0 });
+      return "tile";
+    }
+    ui.update(node.id, { maxWidth: "100%", minWidth: 0 });
+    return "content";
   }
 
   const bubbles = new Map();
@@ -2165,12 +2178,13 @@ if (phoenix.appearance) (() => {
     for (const card of embeds) {
       if (card.id === box.id || !childOf(card, box.id)) continue;
       hasCard = true;
-      fitMediaBranch(card, 0, false, true);
-      ui.update(card.id, { width: "fill", minWidth: 0, shrink: 1 });
+      const compact = fitMediaBranch(card, 0, { inEmbed: true }) === "tile";
+      const sizing = { width: compact ? "wrap" : "fill", minWidth: 0, shrink: 1 };
+      ui.update(card.id, sizing);
       for (let n = parent(card), i = 0; n && n.id !== box.id && i < 8; n = parent(n), i++) {
         const info = original(n);
         if (info?.horizontal || !shellNode(n) || n.children.length !== 1) break;
-        ui.update(n.id, { width: "fill", minWidth: 0, shrink: 1 });
+        ui.update(n.id, sizing);
       }
     }
     const body = box.id === anchor.id ? null : childOf(anchor, box.id);
@@ -2704,7 +2718,7 @@ if (phoenix.appearance) (() => {
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.9", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.10", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
