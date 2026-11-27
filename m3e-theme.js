@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.2
+// @version 0.11.3
 // @author onichan0923
 
 (() => {
@@ -2227,6 +2227,68 @@
   const inboxPages = ["inbox-screen","inbox-feed","inbox-page"];
   const inboxRows = ["inbox-row","inbox-section","inbox-title","inbox.title","recent-activity-text"];
 
+  const requestActions = {prefix:"request-actions-"};
+  const requestFaces = new Map();
+
+  function clearRequestFaces(all = false, recreated = null) {
+    for (const [id, face] of requestFaces) {
+      const host = ui.node(id);
+      if (!all && face.group !== recreated && host?.children.includes(face.before) &&
+          ui.node(face.group)?.accessibilityId === face.name && childOf(host, face.group)) continue;
+      face.remove();
+      requestFaces.delete(id);
+    }
+  }
+
+  function paintRequestButton(group, slot, button, label, fill, ink) {
+    // The hit target may sit inside the rounded face. Stay in this action's
+    // branch and put the backing behind the original localized content.
+    let owner = button;
+    for (let n = button; n && n.id !== group.id; n = parent(n)) {
+      const surface = original(n);
+      if (surface?.brandFill || (surface?.topLeft && (surface.opaque || surface.backplate))) owner = n;
+      if (n.id === slot.id) break;
+    }
+    if (label.id === owner.id) {
+      paintButton(button, fill, ink);
+      return;
+    }
+    let branch = label;
+    while (branch.parent !== owner.id) {
+      branch = parent(branch);
+      if (!branch) return;
+    }
+    const radius = original(owner)?.topLeft || 8;
+    const old = requestFaces.get(owner.id);
+    const sameFace = old && old.group === group.id && old.name === group.accessibilityId &&
+      old.before === branch.id && old.fill === fill && old.radius === radius;
+    if (sameFace && old.label === label.id && old.button === button.id && old.ink === ink) return;
+    paintButton(button, fill, ink);
+    ui.update(label.id, {background:0, color:ink});
+    if (owner.id !== button.id) ui.update(owner.id,{background:fill, activeBackground:fill});
+    if (!ui.mount) return;
+    if (sameFace) {
+      Object.assign(old, {button:button.id, label:label.id, ink});
+      return;
+    }
+    const remove = ui.mount(owner.id, switchFace({width:"fill", height:"fill", radius, background:fill}), {before:branch.id});
+    old?.remove();
+    requestFaces.set(owner.id, {group:group.id, name:group.accessibilityId, before:branch.id, button:button.id, label:label.id, ink, fill, radius, remove});
+  }
+
+  function requestPair(n, group) {
+    const slots = children(n);
+    if (slots.length !== 2) return false;
+    const buttons = slots.map(actionIn);
+    if (!buttons.every(Boolean)) return false;
+    if (!group && slots[1].accessibilityId !== "ignore" && buttons[1].accessibilityId !== "ignore") return false;
+    const labels = buttons.map(actionLabel);
+    if (!labels.every(Boolean)) return false;
+    paintRequestButton(group || n,slots[0],buttons[0],labels[0],palette.accent,palette.onAccent);
+    paintRequestButton(group || n,slots[1],buttons[1],labels[1],palette.pressed,palette.ink);
+    return true;
+  }
+
   function inbox(anchor) {
     let root = anchor;
     for (let n = anchor, depth = 0; n && n.id !== ui.root() && depth < 18; n = parent(n), depth++) {
@@ -2234,32 +2296,23 @@
     }
     const isRoot = inboxPages.includes(root.accessibilityId);
     if (isRoot) ui.update(root.id,{...flat,background:conversation.body});
-    const namedActions = anchor.accessibilityId?.startsWith("request-actions-");
-    const section = namedActions || inboxRows.includes(anchor.accessibilityId) ? anchor : root;
-    for (const n of descendants(section,14,640)) {
+    const queue = [[anchor, null, 0]];
+    for (let i = 0; i < queue.length && i < 640; i++) {
+      const [n, inActions, depth] = queue[i];
       const id = n.accessibilityId || "", kind = kindOf(n);
+      const named = id.startsWith(requestActions.prefix);
+      const group = named ? n : inActions;
+      if ((named || original(n)?.horizontal) && requestPair(n,group)) continue;
       if (inboxPages.includes(id) || (isRoot && ["list","scroll"].includes(kind))) {
         ui.update(n.id,{...flat,background:conversation.body});
-      } else if (isRoot && !interactive(n) && ["view","stack"].includes(kind) &&
+      } else if (isRoot && !named && !inActions && !interactive(n) && ["view","stack"].includes(kind) &&
           (original(n)?.opaque || original(n)?.backplate) && !original(n)?.topLeft) {
         ui.update(n.id,{background:0,backgroundGradient:null});
       }
       if (id === "inbox-title" || id === "inbox.title") {
         for (const title of descendants(n,3,12)) if (kindOf(title) === "text") ui.update(title.id,{color:palette.ink});
       }
-      const pair = children(n);
-      if (pair.length !== 2 || !(id.startsWith("request-actions-") || original(n)?.horizontal)) continue;
-      const buttons = pair.map(actionIn);
-      const labels = buttons.map(actionLabel);
-      if (!labels.every(Boolean)) continue;
-      if (!namedActions && !id.startsWith("request-actions-") && !descendants(n,5,36).some(c =>
-          c.accessibilityId === "ignore" || original(c)?.brandFill)) continue;
-      buttons.forEach((button,i) => {
-        const background = i ? palette.pressed : palette.accent;
-        const color = i ? palette.ink : palette.onAccent;
-        paintButton(button,background,color);
-        ui.update(labels[i].id,{background,color});
-      });
+      if (depth < 14) for (const child of children(n)) queue.push([child,group,depth+1]);
     }
     if (isRoot) rememberLayout("inbox",root);
   }
@@ -2370,6 +2423,7 @@
     activeDark = dark;
     clearPickerCorners(true);
     removeSkins(true);
+    clearRequestFaces(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
     ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
@@ -2391,6 +2445,8 @@
     seenPanels.clear();
     dmHeaders.clear(); guildSheets.clear();
     const textField = { ...flat, radius: 0, color: palette.ink, selectionColor: palette.accent, placeholderColor: palette.muted };
+    for (const page of inboxPages) patch(page,{...flat,background:conversation.body});
+    rules.push(ui.patchProps(requestActions,{addOn:["appeared"]}));
     patch("composer", textField);
     patch(searchId, textField);
     patch("search.entry", { background: 0, activeBackground: palette.ripple, radius: 20, activeRadius: 20.5 });
@@ -2458,7 +2514,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.3", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2550,11 +2606,19 @@
     ...["create-thread","empty-chat"].map(n => [n,namedThreadButton]),
     ...dmControls.map(n => [n,dmActions]),
     ...["guild-sheet","guild-sheet-name","tab-invite","tab-settings"].map(n => [n,guildOptions]),
-    ...[...inboxPages,...inboxRows,{prefix:"request-actions-"}].map(n => [n,inbox]),
+    ...[...inboxPages,...inboxRows,requestActions].map(n => [n,inbox]),
     ["social-tabs",paintTabs],
     ...["social-sensitive","social-spam","social-sharing","social-servers","social-pages","social-pager","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
   ];
-  for (const [match,visit] of extraSurfaces) watch(match,visit);
+  for (const [match,visit] of extraSurfaces) watch(match, match === requestActions ? n => {
+    clearRequestFaces(false, n.id);
+    visit(n);
+  } : visit);
+  watch("ignore", n => {
+    for (let p = parent(n), d = 0; p && d < 8; p = parent(p), d++) {
+      if (p.accessibilityId?.startsWith(requestActions.prefix)) { inbox(p); break; }
+    }
+  });
   for (const name of pickerAnchors) watch(name, paintPicker);
   watch({ prefix: "message.author:" }, photoOnly);
   watch(searchId, settingsFromSearch);
@@ -2589,6 +2653,8 @@
     } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
   }));
   watchers.push(ui.onEvent("pageSettle", () => {
+    clearRequestFaces();
+    forLive(requestActions,inbox);
     forLive("social-tabs",paintTabs);
     if (lastList != null) chatFooter(ui.node(lastList));
     const list = lastSettings == null ? null : ui.node(lastSettings);
@@ -2602,6 +2668,7 @@
     const scrolled = ui.node(event.node);
     if (scrolled && ["scroll","list"].includes(kindOf(scrolled))) {
       for (let n=scrolled,d=0; n && d<10; n=parent(n),d++) {
+        if (inboxPages.includes(n.accessibilityId)) { clearRequestFaces(); inbox(scrolled); break; }
         const route=detailLists.get(n.id);
         if (route) {detailWidgets(scrolled,route);break;}
       }
@@ -2702,6 +2769,7 @@
     stopPickerWatch();
     clearPickerCorners(true);
     clearThreadSkin();
+    clearRequestFaces(true);
     stopGuildWatch();
     removeSkins(true);
     clearEditing();
