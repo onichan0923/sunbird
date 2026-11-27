@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.10.0
+// @version 0.11.0
 // @author onichan0923
 
 (() => {
@@ -160,6 +160,19 @@
 
   function original(node) {
     return node && typeof ui.surface === "function" ? ui.surface(node.id) : null;
+  }
+
+  function kindOf(n) { return n && (n.kind || original(n)?.kind); }
+  function interactive(n) { return !!n && (pressable(n) || original(n)?.pressable); }
+
+  function descendants(root, depth, limit) {
+    const found = [], queue = root ? [[root, 0]] : [];
+    for (let i = 0; i < queue.length && found.length < limit; i++) {
+      const [node, level] = queue[i];
+      found.push(node);
+      if (level < depth) for (const n of children(node)) queue.push([n, level + 1]);
+    }
+    return found;
   }
 
   function forLive(match, visit) {
@@ -383,7 +396,7 @@
   }
 
   function settingsRow(node) {
-    if (!node || node.accessibilityId === searchId) return false;
+    if (!node || node.accessibilityId === searchId || isSocialTab(node)) return false;
     const name = node.accessibilityId || "";
     if (dividerName.test(name)) return false;
     if (name.startsWith(settingsMatch.prefix) || name === "phoenix-Sunbird") return true;
@@ -461,7 +474,7 @@
         radiusBottomLeft: after ? corners.inner : corners.outer, radiusBottomRight: after ? corners.inner : corners.outer,
         margin: [0, 0, 0, after ? corners.gap : 0],
       });
-      if (isRow === settingsRow) tintSettingsRow(node);
+      if (isRow === settingsRow) { clearRowFace(node); tintSettingsRow(node); }
       if (isRow === menuRow) tintMenuIcon(node, kids);
     }
     return true;
@@ -479,7 +492,16 @@
     if (icon && !icon.children.length && (!icon.kind || icon.kind === "image")) ui.update(icon.id, { tint: palette.accent });
   }
 
+  function isSocialTab(node) {
+    for (let i = 0; node && i < 6; i++, node = parent(node)) {
+      if (node.accessibilityId === "social-tabs" || original(node)?.role === "tablist" || original(node)?.role === "tab") return true;
+    }
+    return false;
+  }
+
   function switchParts(row) {
+    if (isSocialTab(row)) return null;
+    if (["radio","radiogroup"].includes(original(row)?.role)) return null;
     const inner = row.children.length === 1 ? ui.node(row.children[0]) : row;
     const parts = children(inner);
     if (parts.length < 2 || parts.length > 3) return null;
@@ -488,7 +510,12 @@
     const track = ui.node(wrap.children[0]);
     if (!shellNode(track) || track.children.length !== 1) return null;
     const knob = ui.node(track.children[0]);
-    return shellNode(knob) && !knob.children.length ? { track, knob } : null;
+    if (!shellNode(knob) || knob.children.length || ["text","image","markup"].includes(kindOf(knob))) return null;
+    const controlRole = original(row)?.role || original(inner)?.role;
+    if (controlRole && controlRole !== "switch" && controlRole !== "checkbox") return null;
+    if (controlRole || [row.checked,inner.checked,track.checked].some(v => typeof v === "boolean")) return { track, knob };
+    const rail = original(track), cap = original(knob);
+    return rail?.height >= 24 && rail.height <= 36 && cap?.height >= 14 && cap.height <= 26 ? { track, knob } : null;
   }
 
   function switchFace(props, kids = []) {
@@ -505,6 +532,13 @@
     }
   }
 
+  function handleMark(checked) {
+    const stroke = (width, x, y, rotation) => switchFace({ width, height: 1.8, radius: 0.9,
+      background: checked ? palette.accent : palette.track, translateX: x, translateY: y, rotation });
+    return checked ? [stroke(5.7, -3.4, 1.2, 45), stroke(11.3, 1.9, -0.8, -45)] :
+      [stroke(11, 0, 0, 45), stroke(11, 0, 0, -45)];
+  }
+
   function skinSwitch(track, knob) {
     if (typeof ui.mount !== "function") return;
     const existing = switchSkins.get(track.id);
@@ -516,16 +550,12 @@
     const offRail = () => switchFace({ width: 52, height: 32, radius: 16, background: palette.handle }, [
       switchFace({ width: 48, height: 28, radius: 14, background: palette.track }),
     ]);
-    const stroke = (width, x, y, angle) => switchFace({ width, height: 1.8, radius: 0.9,
-      translateX: x, translateY: y, rotation: angle, background: palette.accent });
     const checkedThumb = switchFace({ width: 24, height: 24, radius: 12,
-      translateX: -2, background: palette.onAccent }, [
-      stroke(5.7, -3.4, 1.2, 45), stroke(11.3, 1.9, -0.8, -45),
-    ]);
+      translateX: -2, background: palette.onAccent }, handleMark(true));
     // x = 24 splits the 52dp rail between the 16dp off and 24dp on thumbs.
     const base = ui.mount(track.id, switchFace({ width: 52, height: 32, radius: 16, clip: true }, [
       offRail(),
-      switchFace({ width: 16, height: 16, radius: 8, translateX: -10, background: palette.handle }),
+      switchFace({ width: 24, height: 24, radius: 12, translateX: -10, background: palette.handle }, handleMark(false)),
       switchFace({ width: 28, height: 32, translateX: 12, clip: true, background: palette.accent }, [checkedThumb]),
     ]), { before: knob.id });
     // The two masks ride the original knob. At x=0 the right mask finishes
@@ -556,12 +586,8 @@
     const rail = switchFace({ width: 52, height: 32, radius: 16, scaleX: 1 / scale,
       background: checked ? palette.accent : palette.handle },
       checked ? [] : [switchFace({ width: 48, height: 28, radius: 14, background: palette.track })]);
-    const stroke = (width, x, y, rotation) => switchFace({ width, height: 1.8, radius: 0.9,
-      background: palette.accent, translateX: x, translateY: y, rotation });
-    const size = checked ? 24 : 16;
-    const thumb = switchFace({ width: size, height: size, radius: size / 2, scaleX: 1 / scale,
-      background: checked ? palette.onAccent : palette.handle }, checked ?
-      [stroke(5.7, -3.4, 1.2, 45), stroke(11.3, 1.9, -0.8, -45)] : []);
+    const thumb = switchFace({ width: 24, height: 24, radius: 12, scaleX: 1 / scale,
+      background: checked ? palette.onAccent : palette.handle }, handleMark(checked));
     const base = ui.mount(track.id, rail, { before: knob.id });
     const cap = ui.mount(knob.id, thumb);
     if (previous) for (const remove of previous.remove) remove();
@@ -650,9 +676,44 @@
     return { label: words, ring: trailing };
   }
 
+  function themeRadio(row) {
+    const all = descendants(row, 5, 26);
+    let ring = all.find(n => n.id !== row.id && !["text","markup"].includes(kindOf(n)) &&
+      original(n)?.height >= 14 && original(n).height <= 30 && (original(n).topLeft >= 6 || kindOf(n) === "image"));
+    if (!ring) {
+      let body = row;
+      while (body && body.children.length === 1) body = ui.node(body.children[0]);
+      if (body && original(body)?.horizontal) ring = children(body).at(-1);
+    }
+    if (!ring) return;
+    const checked = row.checked ?? original(row)?.selected ?? ring.checked;
+    if (typeof checked !== "boolean") return;
+    if (kindOf(ring) === "image" || kindOf(ring) === "ring") {
+      const color = checked ? palette.accent : palette.handle;
+      ui.update(ring.id, {tint: color, color, borderColor: color});
+    }
+    else {
+      ui.update(ring.id, {background: checked ? palette.accent : 0, borderColor: checked ? palette.accent : palette.handle});
+      for (const dot of descendants(ring, 2, 5).slice(1)) {
+        if (kindOf(dot) === "image") ui.update(dot.id, {tint: palette.onAccent});
+        else if (!dot.children.length) ui.update(dot.id, {background: checked ? palette.onAccent : 0});
+      }
+    }
+  }
+
   function radioGroup(group) {
     const items = children(group).filter(n => !divider(n));
     if (items.length < 2 || items.length > 12) return false;
+    const semantic = items.map(n => descendants(n, 3, 12).find(c => original(c)?.role === "radio"));
+    if (semantic.every(n => n && typeof (n.checked ?? original(n)?.selected) === "boolean")) {
+      const ids = new Set(items.map(n => n.id));
+      styleGroup(group, n => n && ids.has(n.id));
+      for (let i = 0; i < items.length; i++) {
+        clearRowFace(items[i]);
+        themeRadio(semantic[i]);
+      }
+      return true;
+    }
     const shapes = items.map(radioParts);
     if (shapes.some(p => !p)) return false;
     // Some versions add a wrapper around each ring. A radio group has both
@@ -675,6 +736,16 @@
     return true;
   }
 
+  function clearRowFace(row) {
+    ui.update(row.id, {bg: 0, background: palette.row, activeBackground: palette.pressed});
+    let n = row;
+    while (n.children.length === 1) {
+      n = ui.node(n.children[0]);
+      if (!n || !["view","stack"].includes(kindOf(n))) break;
+      ui.update(n.id, {bg: 0, background: 0, backgroundGradient: null});
+    }
+  }
+
   function privacyRows(group) {
     // The privacy page mixes solitary navigation preferences and grouped
     // radio options. Their labels and accessory can be wrapped separately.
@@ -689,18 +760,21 @@
         if (body.children.length !== 1) break;
         body = ui.node(body.children[0]);
       }
-      if (!body || !actionable || !original(body)?.horizontal || body.children.length !== 2) return false;
-      const [label, accessory] = children(body);
+      if (!body || !actionable || !original(body)?.horizontal || ![2,3].includes(body.children.length)) return false;
+      const pieces = children(body);
+      const [label, accessory] = pieces.slice(-2);
+      if (pieces.length === 3 && !descendants(pieces[0],2,5).some(n => kind(n) === "image")) return false;
       let text = label;
       while (text && text.children.length === 1) text = ui.node(text.children[0]);
       const labels = text?.children.length ? children(text) : [text];
       if (!labels.length || !labels.every(n => kind(n) === "text") || !accessory ||
           accessory.children.length > 1 || switchParts(row)) return false;
-      matches.push({row,body,labels});
+      matches.push({row,body,labels,icon: pieces.length === 3 ? pieces[0] : null});
     }
     const ids = new Set(rows.map(r => r.id));
     styleGroup(group, n => n && ids.has(n.id));
-    for (const {row,body,labels} of matches) {
+    for (const {row,body,labels,icon} of matches) {
+      if (icon) for (const n of descendants(icon,2,5)) if (kind(n) === "image") ui.update(n.id,{tint:palette.accent});
       for (let n = body; n && n.id !== row.id; n = parent(n)) {
         if (original(n)?.opaque || original(n)?.backplate) ui.update(n.id, { background: 0, bg: 0 });
       }
@@ -710,30 +784,45 @@
     return true;
   }
 
+  function paintTabs(root) {
+    const all = descendants(root, 4, 28);
+    const tabs = all.filter(n => n.id !== root.id && original(n)?.role === "tab");
+    if (!tabs.length) {
+      const rails = all.filter(n => children(n).filter(c => interactive(c) && buttonLabel(c)).length === 2);
+      if (rails.length) tabs.push(...children(rails[0]).filter(c => interactive(c) && buttonLabel(c)));
+    }
+    if (tabs.length !== 2) return;
+    ui.update(root.id, { background: palette.row, bg: 0, radius: 20 });
+    for (const tab of tabs) {
+      const state = original(tab)?.selected ?? tab.checked;
+      if (typeof state === "boolean") ui.update(tab.id, { background: state ? palette.pressed : 0, radius: 16 });
+      for (const n of descendants(tab, 3, 10)) if (kindOf(n) === "text") ui.update(n.id, {color: state === false ? palette.muted : palette.accent});
+    }
+  }
+
+  function refreshTabs(tab) {
+    for (let n = parent(tab), d = 0; n && d < 4 && n.id !== ui.root(); n = parent(n), d++) {
+      if (n.accessibilityId === "social-tabs" || original(n)?.role === "tablist" ||
+          children(n).filter(c => original(c)?.role === "tab").length === 2) { paintTabs(n); return; }
+    }
+    forLive("social-tabs",paintTabs);
+  }
+
   function detailWidgets(list, route) {
     if (!route.startsWith("settings-phoenix")) rememberLayout(/connect|linked/.test(route) ? "connections" :
       /content|social/.test(route) ? "content" : /privacy|data/.test(route) ? "privacy" : "settings", list);
     const work = [[list, 0]], connection = /connect|linked|authorized/.test(route);
     if (/content|social/.test(route)) {
-      let top = ui.node(list.children[0]);
-      for (let i = 0; i < 4 && shellNode(top); i++) {
-        const pieces = children(top);
-        if (pieces.length === 1) { top = pieces[0]; continue; }
-        const tabs = pieces.filter(buttonLabel);
-        if (tabs.length === 2 && pieces.length <= 3) {
-          ui.update(top.id, { background: palette.row });
-          for (const tab of tabs) ui.update(buttonLabel(tab).id, { color: palette.ink });
-          for (const mark of pieces) if (!tabs.includes(mark) && shellNode(mark) && !mark.children.length) ui.update(mark.id, { background: palette.track });
-        }
-        break;
-      }
+      forLive("social-tabs", paintTabs);
+      const first = ui.node(list.children[0]);
+      if (first) paintTabs(first);
     }
     const painted = new Set();
     for (let budget = 450; work.length && budget > 0; budget--) {
       const [node, depth] = work.pop();
       if (depth > 10 || !node.children.length || node.accessibilityId === searchId) continue;
-      if (/privacy|data/i.test(route) && privacyRows(node)) continue;
-      if (radioGroup(node)) continue;
+      if (isSocialTab(node)) continue;
+      if (radioGroup(node) || privacyRows(node)) continue;
       const toggle = switchParts(node);
       if (toggle && !painted.has(toggle.track.id)) {
         painted.add(toggle.track.id);
@@ -778,10 +867,11 @@
       const body = parent(header);
       if (!shellNode(body) || body.children.length < 2 || body.children.length > 6) continue;
       const siblings = children(body).filter(n => n.id !== header.id);
-      const scroll = siblings.find(n => (n.kind || original(n)?.kind) === "scroll") ||
+      const scroll = siblings.find(n => ["scroll","list"].includes(kindOf(n))) ||
+        siblings.flatMap(n => descendants(n,3,18)).find(n => ["scroll","list"].includes(kindOf(n))) ||
         (body.children.length === 4 && body.children[3] === header.id ? ui.node(body.children[2]) : null);
-      if (!scroll || scroll.children.length !== 1 || (scroll.kind && scroll.kind !== "scroll")) continue;
-      const list = ui.node(scroll.children[0]);
+      if (!scroll || !scroll.children.length || (scroll.kind && !["scroll","list"].includes(scroll.kind))) continue;
+      const list = scroll.children.length === 1 ? ui.node(scroll.children[0]) : scroll;
       if (list) {
         if (detailLists.size > 48) detailLists.clear();
         detailLists.set(list.id, title.accessibilityId);
@@ -842,6 +932,16 @@
       paintSettingsList(list);
     } else {
       styleSection(section);
+    }
+  }
+
+  function preferenceSection(anchor) {
+    let list=anchor;
+    for(let i=0; list && i<10; list=parent(list),i++) {
+      if (!["scroll","list"].includes(kindOf(list))) continue;
+      const content=list.children.length===1 ? ui.node(list.children[0]) : list;
+      if (content) detailWidgets(content, anchor.accessibilityId.startsWith("privacy-") ? "privacy" : "content-social");
+      return;
     }
   }
 
@@ -908,7 +1008,13 @@
     return /^(?:navigation\.(?:channel:|category:|server:|messages$|add_server$)|dm\.row:)/.test(node.accessibilityId || "");
   }
 
+  const dmHeaders = new Map();
   function styleSidebar(node) {
+    if (node.accessibilityId?.startsWith("dm.row:") && node.list != null &&
+        Date.now() - (dmHeaders.get(node.list) || 0) > 500) {
+      if (dmHeaders.size > 30) dmHeaders.clear();
+      dmHeaders.set(node.list,Date.now()); dmActions(node);
+    }
     const content = /^(?:navigation\.(?:channel|category):|dm\.row:)/.test(node.accessibilityId || "");
     const viewport = viewportFor(node);
     if (viewport && viewport.id !== ui.root()) {
@@ -1833,48 +1939,186 @@
     }
   }
 
-  function threadNotice(card, namedButton = null) {
-    const parts = children(card);
-    if (parts.length !== 2 || card.sheet != null || card.list != null) return false;
-    let [note, button] = parts;
-    while (note && note.children.length === 1) note = ui.node(note.children[0]);
-    if ((note?.kind || original(note)?.kind) !== "text") return false;
-    if (namedButton && button.id !== namedButton.id && !childOf(namedButton, button.id)) return false;
-    for (let i = 0; button && i < 4; i++) {
-      const shape = original(button);
-      if (shape?.pressable || pressable(button) || button.accessibilityId === "create-thread") break;
-      if (button.children.length !== 1) return false;
-      button = ui.node(button.children[0]);
+  function paintButton(button, fill, ink) {
+    const nodes = descendants(button, 4, 18);
+    ui.update(button.id, {background: fill, bg: 0, backgroundGradient: null, activeBackground: fill});
+    for (const n of nodes) {
+      const kind = kindOf(n);
+      if (kind === "text" || kind === "markup") ui.update(n.id, {color: ink});
+      else if (kind === "image") ui.update(n.id, {tint: ink});
+      else if (n !== button && (original(n)?.brandFill || original(n)?.opaque || original(n)?.gradient)) {
+        ui.update(n.id, {background: 0, bg: 0, backgroundGradient: null});
+      }
     }
-    const label = button && buttonLabel(button);
-    if (!label || (label.kind || original(label)?.kind) !== "text") return false;
-    if (!namedButton && !original(button)?.brandFill) return false;
+  }
+
+  function actionIn(n) {
+    if (!n) return null;
+    return descendants(n, 3, 10).find(c => interactive(c) || original(c)?.role === "button") || null;
+  }
+
+  function threadNotice(card, namedButton = null) {
+    if (!card || card.sheet != null || card.list != null || !shellNode(card)) return false;
+    const parts = children(card).filter(n => kindOf(n) === "text" || n.children.length);
+    if (parts.length !== 2) return false;
+    const [noteBranch, buttonBranch] = parts;
+    const notes = descendants(noteBranch,3,10);
+    const note = notes.find(n => kindOf(n) === "text");
+    const button = actionIn(buttonBranch) || (namedButton && (buttonBranch.id === namedButton.id || childOf(namedButton,buttonBranch.id)) ? buttonBranch : null);
+    if (!note || !button || notes.some(interactive) || !descendants(button,4,12).some(n => kindOf(n) === "text")) return false;
+    if (namedButton && namedButton !== card && namedButton.id !== buttonBranch.id && namedButton.id !== button.id &&
+        !childOf(namedButton,buttonBranch.id) && !childOf(button,namedButton.id)) return false;
     ui.update(card.id, { ...flat, background: palette.row, radius: 18 });
     ui.update(note.id, {color: palette.ink});
-    ui.update(button.id, {background: palette.accent, activeBackground: palette.accent});
-    ui.update(label.id, {color: palette.onAccent});
+    paintButton(button,palette.accent,palette.onAccent);
     return true;
   }
 
-  function namedThreadButton(button) {
-    for (let n = parent(button), d = 0; shellNode(n) && d < 4; n = parent(n), d++) {
-      if (threadNotice(n, button)) return;
+  function namedThreadButton(anchor) {
+    if (anchor.accessibilityId === "empty-chat") {
+      for (const n of descendants(anchor,5,24)) if (threadNotice(n)) return;
+    } else {
+      for (let n = anchor, d = 0; n && d < 7; n = parent(n), d++) {
+        if (n.id === ui.root() || n.sheet != null) break;
+        if (threadNotice(n,anchor)) return;
+      }
     }
   }
 
   function chatFooter(list) {
-    let branch = list;
-    for (let depth = 0; branch && depth < 4; depth++, branch = parent(branch)) {
+    for (let branch = list, depth = 0; branch && depth < 6; branch = parent(branch), depth++) {
       const host = parent(branch);
-      if (!shellNode(host) || host.children.length > 8) break;
+      if (!shellNode(host) || host.children.length > 12 || original(host)?.horizontal) break;
       const work = children(host).slice(host.children.indexOf(branch.id) + 1);
-      for (let i = 0; work.length && i < 18; i++) {
-        const n = work.shift();
+      for (let i = 0; i < work.length && i < 48; i++) {
+        const n = work[i];
         if (n.sheet != null || n.list != null || n.accessibilityId === "composer" || !shellNode(n)) continue;
         if (threadNotice(n)) return;
-        if (n.children.length <= 3) work.push(...children(n));
+        if (n.children.length <= 4) work.push(...children(n));
       }
     }
+  }
+
+  function readableRow(n) {
+    if (!n || isSocialTab(n)) return false;
+    const button = actionIn(n);
+    if (!button || (n.id !== button.id && n.children.length !== 1)) return false;
+    return descendants(button,4,18).some(c => kindOf(c) === "text");
+  }
+
+  const guildSheets = new Map();
+  function guildOptions(anchor) {
+    let sheet = anchor.sheet != null ? ui.node(anchor.sheet) : anchor;
+    if (!sheet || (anchor.sheet == null && anchor.accessibilityId !== "guild-sheet")) return;
+    const previous=guildSheets.get(sheet.id), now=Date.now();
+    if (previous && previous.anchor===sheet.children[0] && previous.time+80>now) return;
+    const nodes = descendants(sheet, 13, 450);
+    if (!nodes.some(n => n.accessibilityId === "guild-sheet" || n.accessibilityId === "guild-sheet-name" || n.accessibilityId === "tab-invite") &&
+        !nodes.some(n => children(n).length >= 3 && children(n).length <= 5 &&
+          children(n).every(tile => readableRow(tile) && descendants(tile,4,12).some(c => kindOf(c) === "image")))) return;
+    if (guildSheets.size>32) guildSheets.clear();
+    guildSheets.set(sheet.id,{anchor:sheet.children[0],time:now});
+    ui.update(sheet.id, {background: palette.sheet, handleColor: palette.handle});
+    for (const n of nodes) {
+      if (n.accessibilityId === "guild-sheet" || ["scroll","list"].includes(kindOf(n)) ||
+          (n.id !== sheet.id && !interactive(n) && original(n)?.opaque && !original(n)?.horizontal &&
+           n.children.length && ["view","stack"].includes(kindOf(n)) && descendants(n,3,18).some(interactive))) {
+        ui.update(n.id,{background:palette.sheet,bg:0});
+      }
+      const pieces = children(n);
+      if (!pieces.length) continue;
+      const quick = original(n)?.horizontal && pieces.length >= 3 && pieces.length <= 5 && pieces.every(tile => actionIn(tile));
+      if (quick) {
+        for (const tile of pieces) {
+          const button = actionIn(tile);
+          const image = descendants(button,4,12).find(c => kindOf(c) === "image");
+          if (!image) continue;
+          const face = parent(image);
+          ui.update((face && face.id !== n.id ? face : button).id, {background:palette.row, borderColor:palette.track});
+          ui.update(image.id, {tint:palette.accent});
+          for (const label of descendants(tile,4,16)) if (kindOf(label) === "text") ui.update(label.id,{color:palette.ink});
+        }
+      } else if (pieces.every(c => divider(c) || readableRow(c)) && pieces.some(readableRow)) {
+        styleGroup(n, readableRow);
+        for (const row of pieces.filter(readableRow)) {
+          clearRowFace(row);
+          const control = actionIn(row);
+          const toggle = switchParts(control) || switchParts(row);
+          if (toggle) tintSwitch(original(control)?.role === "switch" ? control : row,toggle);
+        }
+      }
+    }
+    rememberLayout("guild-options",sheet);
+    return true;
+  }
+
+  let guildWatch;
+  function stopGuildWatch() {
+    if (guildWatch) {guildWatch(); guildWatch=null;}
+  }
+  function openingGuild() {
+    stopGuildWatch();
+    const until=Date.now()+1800;
+    guildWatch=ui.onNode({prefix:""}, stamp => {
+      if (Date.now()>until) {stopGuildWatch(); return;}
+      const n=ui.node(stamp.id);
+      if (n?.sheet!=null && guildOptions(n)) stopGuildWatch();
+    });
+  }
+
+  const dmControls = ["dm-new-message","dm-add-friends","dm-search"];
+  function dmActions(anchor) {
+    if (anchor.accessibilityId === "dm-new-message") {
+      paintButton(actionIn(anchor) || anchor,palette.accent,palette.onAccent);
+      return;
+    }
+    const roots = [];
+    if (dmControls.includes(anchor.accessibilityId)) {
+      let branch = anchor;
+      for (let i=0; branch && i<4; i++,branch=parent(branch)) roots.push(branch);
+    } else {
+      let branch = ui.node(anchor.list);
+      if (!branch) return;
+      roots.push(...children(branch).slice(0,1));
+      for(let i=0; branch && i<3; i++,branch=parent(branch)) {
+        const host=parent(branch);
+        if (!shellNode(host)) break;
+        roots.push(...children(host).slice(0,host.children.indexOf(branch.id)));
+      }
+    }
+    for (const root of roots) for (const n of descendants(root,5,42)) {
+      if (!original(n)?.horizontal || n.children.length !== 3) continue;
+      const buttons = children(n).map(actionIn);
+      if (buttons.some(b => !b)) continue;
+      const parts = buttons.map(b => descendants(b,4,12));
+      if (!parts.every(kids=>kids.some(c=>kindOf(c)==="image")) ||
+          parts[0].some(c=>kindOf(c)==="text") || !parts[1].some(c=>kindOf(c)==="text") || parts[2].some(c=>kindOf(c)==="text")) continue;
+      paintButton(buttons[2],palette.accent,palette.onAccent);
+      return;
+    }
+  }
+
+  function inbox(anchor) {
+    let root = anchor;
+    for (let n=anchor, d=0; n && n.id!==ui.root() && d<16; n=parent(n),d++) {
+      if (["inbox-feed","inbox-page","inbox-screen"].includes(n.accessibilityId)) root=n;
+    }
+    if (root===anchor && anchor.list!=null) root=ui.node(anchor.list) || anchor;
+    ui.useSystemFontIn?.(root.id);
+    const section = anchor.accessibilityId?.startsWith("request-actions-") ? anchor : root;
+    const nodes = descendants(section,11,360);
+    for (const n of nodes) {
+      if (n.accessibilityId === "inbox-screen" || n.accessibilityId === "inbox-feed") ui.update(n.id,{background:conversation.body});
+      if (n.children.length !== 2 || !original(n)?.horizontal) continue;
+      const buttons = children(n).map(actionIn);
+      if (!buttons.every(b => b && buttonLabel(b))) continue;
+      // Friend request actions share one horizontal row, Accept followed by Ignore.
+      if (!n.accessibilityId?.startsWith("request-actions-") && !descendants(n,4,16).some(c => c.accessibilityId === "ignore") &&
+          !descendants(buttons[0],3,12).some(c => original(c)?.brandFill)) continue;
+      paintButton(buttons[0],palette.accent,palette.onAccent);
+      paintButton(buttons[1],palette.pressed,palette.ink);
+    }
+    rememberLayout("inbox",root);
   }
 
   const pickerAnchors = ["expression.search", "xp.grid", "xp-handle", "expression-rail", "media-grid",
@@ -1985,7 +2229,8 @@
     removeSkins(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
-    ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
+    if (ui.useSystemFontIn) ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed, true);
+    else ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
     conversation = {
       header: palette.canvas,
       menu: dark ? palette.canvas : mix(palette.row, palette.canvas, 0.38),
@@ -2002,6 +2247,7 @@
     recentGroups.clear();
     switchOwners.clear();
     seenPanels.clear();
+    dmHeaders.clear(); guildSheets.clear();
     const textField = { ...flat, radius: 0, color: palette.ink, selectionColor: palette.accent, placeholderColor: palette.muted };
     patch("composer", textField);
     patch(searchId, textField);
@@ -2026,7 +2272,7 @@
     forLive("composer", styleComposer);
     forLive(contextCancel, styleContext);
     forLive(searchId, settingsFromSearch);
-    forLive("create-thread", namedThreadButton);
+    for (const [match,visit] of extraSurfaces) forLive(match,visit);
     forLive(messageMatch, styleChat);
     forLive({ prefix: "message.author:" }, photoOnly);
     for (const name of pickerAnchors) forLive(name, paintPicker);
@@ -2070,7 +2316,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.10.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.0", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2158,7 +2404,15 @@
   watch({ prefix: "phoenix." }, n => { if (menuAncestor(n)) styleMenu(n); });
   watch("search.entry", styleHeader);
   watch("composer", styleComposer);
-  watch("create-thread", namedThreadButton);
+  const extraSurfaces = [
+    ...["create-thread","empty-chat"].map(n => [n,namedThreadButton]),
+    ...dmControls.map(n => [n,dmActions]),
+    ...["guild-sheet","guild-sheet-name","tab-invite","tab-settings"].map(n => [n,guildOptions]),
+    ...["inbox-screen","inbox-feed","inbox-page","inbox.title",{prefix:"request-actions-"}].map(n => [n,inbox]),
+    ["social-tabs",paintTabs],
+    ...["social-sensitive","social-spam","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
+  ];
+  for (const [match,visit] of extraSurfaces) watch(match,visit);
   for (const name of pickerAnchors) watch(name, paintPicker);
   watch({ prefix: "message.author:" }, photoOnly);
   watch(searchId, settingsFromSearch);
@@ -2179,6 +2433,7 @@
   }));
   watchers.push(ui.onEvent("press", e => {
     const target = e.accessibilityId || menuTargets.get(e.node);
+    if (target==="guild.menu" || target==="guild-title") openingGuild(); else stopGuildWatch();
     if (target === "composer.attachments" || target === "composer.expressions") openingPicker();
     else stopPickerWatch();
     if (target === "message.actions.edit") {
@@ -2191,8 +2446,10 @@
       clearEditing();
     } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
   }));
+  watchers.push(ui.onEvent("pageSettle", () => forLive("social-tabs",paintTabs)));
   watchers.push(ui.onEvent("submit", e => { if (e.accessibilityId === "composer") clearEditing(); }));
   watchers.push(ui.onEvent("scrollSettle", event => {
+    if (event.node === lastList) chatFooter(ui.node(lastList));
     if (editingMessage) forLive(contextCancel, paintEditedMessage);
     if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
     const scrolled = ui.node(event.node);
@@ -2215,6 +2472,13 @@
           (candidate.kind === "modal" || /^delete-message$|^alert-|^message\.(content|author|avatar|timestamp):/.test(name || ""))) maybeDialog(candidate);
     }
     if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
+    if (name && (name === "social-tabs" || name === "create-thread" || name === "empty-chat" || name === "guild-sheet" ||
+        dmControls.includes(name) || name === "inbox-feed" || name === "inbox-screen" || name.startsWith("request-actions-"))) {
+      const item=ui.node(event.node);
+      if (item?.accessibilityId===name) for (const [match,visit] of extraSurfaces) {
+        if (match===name || (match.prefix && name.startsWith(match.prefix))) visit(item);
+      }
+    }
     if (name !== searchId && name !== "composer" && name !== menuRoot && !toolNames.includes(name)
         && !/^settings-.+-title$/.test(name || "")) return;
     const node = ui.node(event.node);
@@ -2236,12 +2500,20 @@
     const input = ui.node(event.node);
     if (input && input.accessibilityId === "composer") styleComposer(input);
   }));
+  if (ui.onSelected) watchers.push(ui.onSelected(snapshot => {
+    const n = ui.node(snapshot.id);
+    if (original(n)?.role === "radio") themeRadio(n);
+    else if (isSocialTab(n)) refreshTabs(n);
+  }));
   if (typeof ui.onChecked === "function") {
     watchers.push(ui.onChecked(snapshot => {
       const node = ui.node(snapshot.id);
       if (!node || typeof node.checked !== "boolean") return;
+      if (node.sheet != null && original(node)?.role === "switch" && !switchOwners.has(node.id)) guildOptions(node);
       const reactionAnchor = reactionRows.has(node.id) && ui.node(reactionRows.get(node.id));
       if (reactionAnchor) paintReactions(messageColumn(reactionAnchor) || parent(reactionAnchor), reactionAnchor);
+      if (original(node)?.role === "radio") themeRadio(node);
+      if (isSocialTab(node)) refreshTabs(node);
       const owner = switchOwners.get(node.id);
       if (owner == null) return;
       const row = ui.node(owner);
@@ -2276,6 +2548,7 @@
     finishDialogWatch();
     stopPickerWatch();
     clearPickerCorners(true);
+    stopGuildWatch();
     removeSkins(true);
     clearEditing();
     sweepBubbles(true);
