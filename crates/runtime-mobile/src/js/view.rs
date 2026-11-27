@@ -174,6 +174,8 @@ fn add_palette_hook<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rqui
 }
 
 pub fn add_view_hooks<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickjs::Result<()> {
+   #[cfg(target_os = "android")]
+   ui.set("androidControlSurfaces", true)?;
    add_palette_hook(ctx, plugin, ui)?;
    let owner = plugin.to_owned();
    ui.set(

@@ -106,7 +106,12 @@ pub fn add_mount<'js>(ctx: &Ctx<'js>, plugin: &str, ui: &Object<'js>) -> rquickj
                .borrow_mut()
                .insert(id, (owner.clone(), handlers));
             patches::mount::mount(id, parent_id, before, parsed);
-            remover(&ctx, move |_| patches::mount::unmount(id), None)
+            let remove = remover(&ctx, move |_| patches::mount::unmount(id), None)?;
+            remove.set(
+               "isMounted",
+               Function::new(ctx.clone(), move || patches::mount::is_mounted(id))?,
+            )?;
+            Ok::<_, rquickjs::Error>(remove)
          },
       )?,
    )?;

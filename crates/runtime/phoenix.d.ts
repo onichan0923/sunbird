@@ -1358,6 +1358,8 @@ declare namespace Phoenix {
   /// land a moment after the screen they belong to. Everything goes away when the plugin is
   /// turned off.
   interface Ui {
+    /// Android window renderer for M3E action backgrounds and channel list corners.
+    readonly androidControlSurfaces?: boolean;
     /// In the chat header, left of search.
     addHeaderButton(options: ButtonOptions): ButtonRemover;
     /// In the message box, left of the emoji button.
@@ -1494,7 +1496,10 @@ declare namespace Phoenix {
     root(): number | null;
     /// Mounts a raw Phoenix UI subtree onto `parentId` (or `"root"` for the root view). Returns a
     /// function that unmounts and deletes all created nodes.
-    mount(parentId: number | "root", node: MountNode, options?: MountOptions): Remover;
+    mount(parentId: number | "root", node: MountNode, options?: MountOptions): Remover & {
+      /// True once the subtree is mounted and until its parent is recycled or it is removed.
+      isMounted?(): boolean;
+    };
     /// Shows a native Discord in-app notification banner at the top of the screen. Returns a
     /// function that dismisses it early.
     notify(options: NotifyOptions): () => void;

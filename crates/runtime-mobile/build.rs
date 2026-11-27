@@ -41,6 +41,7 @@ fn run(command: &mut Command) {
 }
 fn main() {
    println!("cargo:rerun-if-changed=android/StatusBar.java");
+   println!("cargo:rerun-if-changed=android/ControlSurfaces.java");
    for key in ["ANDROID_HOME", "ANDROID_SDK_ROOT", "JAVA_HOME"] {
       println!("cargo:rerun-if-env-changed={key}");
    }
@@ -72,7 +73,7 @@ fn main() {
          .arg(&platform)
          .arg("-d")
          .arg(&classes)
-         .arg("android/StatusBar.java"),
+         .args(["android/StatusBar.java", "android/ControlSurfaces.java"]),
    );
    let mut class_files: Vec<_> = fs::read_dir(classes.join("dev/sunbird/appearance"))
       .unwrap()

@@ -19,10 +19,11 @@ import android.view.inspector.WindowInspector;
 import java.util.IdentityHashMap;
 
 // Paint only the system-owned status inset. A drawable has no input or accessibility surface.
-public final class StatusBar implements Application.ActivityLifecycleCallbacks {
+public final class StatusBar implements Application.ActivityLifecycleCallbacks, ViewTreeObserver.OnWindowFocusChangeListener, View.OnAttachStateChangeListener {
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static StatusBar owner;
     private final IdentityHashMap<View, Strip> strips = new IdentityHashMap<>();
+    private final IdentityHashMap<View, ControlSurfaces> controls = new IdentityHashMap<>();
     private int color;
     private boolean light;
 
@@ -33,6 +34,7 @@ public final class StatusBar implements Application.ActivityLifecycleCallbacks {
                     app.unregisterActivityLifecycleCallbacks(owner);
                     for (Strip strip : owner.strips.values()) strip.remove();
                     owner.strips.clear();
+                    for (View root : owner.controls.keySet().toArray(new View[0])) owner.forgetControls(root);
                     owner = null;
                 }
                 return;
@@ -48,6 +50,7 @@ public final class StatusBar implements Application.ActivityLifecycleCallbacks {
                 for (View root : WindowInspector.getGlobalWindowViews()) {
                     if (!(root.getLayoutParams() instanceof WindowManager.LayoutParams)) continue;
                     WindowManager.LayoutParams params = (WindowManager.LayoutParams) root.getLayoutParams();
+                    owner.observeControls(root);
                     if (params.type != WindowManager.LayoutParams.TYPE_BASE_APPLICATION) continue;
                     // DecorContext may wrap the application. Content views are
                     // normally inflated with the Activity's themed context.
@@ -78,7 +81,44 @@ public final class StatusBar implements Application.ActivityLifecycleCallbacks {
         return null;
     }
 
+    private void observeControls(View root) {
+        if (controls.containsKey(root)) return;
+        controls.put(root, null);
+        root.addOnAttachStateChangeListener(this);
+        if (root.isAttachedToWindow()) onViewAttachedToWindow(root);
+    }
+
+    private void forgetControls(View root) {
+        ControlSurfaces paint = controls.remove(root);
+        if (paint != null) paint.remove();
+        root.removeOnAttachStateChangeListener(this);
+        ViewTreeObserver observer = root.getViewTreeObserver();
+        if (observer.isAlive()) observer.removeOnWindowFocusChangeListener(this);
+    }
+
+    private final Runnable scanWindows = () -> {
+        if (owner == this && Build.VERSION.SDK_INT >= 29)
+            for (View root : WindowInspector.getGlobalWindowViews()) observeControls(root);
+    };
+
+    public void onWindowFocusChanged(boolean focused) {
+        main.removeCallbacks(scanWindows);
+        main.post(scanWindows);
+        // Window registration and focus dispatch can occur in different traversals.
+        main.postDelayed(scanWindows, 120);
+    }
+
+    public void onViewAttachedToWindow(View root) {
+        if (owner != this || controls.get(root) != null) return;
+        controls.put(root, new ControlSurfaces(root));
+        root.getViewTreeObserver().addOnWindowFocusChangeListener(this);
+        root.postInvalidateOnAnimation();
+    }
+
+    public void onViewDetachedFromWindow(View v) { forgetControls(v); }
+
     private void install(View root, Window window) {
+        observeControls(root);
         Strip existing = strips.get(root);
         if (existing != null) {
             if (existing.window != null || window == null) return;

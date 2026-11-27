@@ -56,6 +56,14 @@ pub fn mount(id: u32, parent: Option<i32>, before: MountBefore, node: MountNode)
    });
 }
 
+/// Whether the subtree is still attached after its native parent was recycled.
+pub fn is_mounted(id: u32) -> bool {
+   patches()
+      .slots
+      .iter()
+      .any(|s| s.kind == SlotKind::Mounted(id))
+}
+
 /// Unmounts a raw JS-constructed subtree mounted with [`mount`].
 pub fn unmount(id: u32) {
    queue(Job::Unmount(id));
