@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.9.0
+// @version 0.9.1
 // @author onichan0923
 
 (() => {
@@ -863,10 +863,11 @@
 
   function styleSidebar(node) {
     const content = /^(?:navigation\.(?:channel|category):|dm\.row:)/.test(node.accessibilityId || "");
-    const fill = content ? paneSurface() : { background: conversation.header };
     const viewport = viewportFor(node);
     if (viewport && viewport.id !== ui.root()) {
-      if (!content || !seenPanels.has(viewport.id)) ui.update(viewport.id, fill);
+      if (!content || !seenPanels.has(viewport.id)) {
+        ui.update(viewport.id, content ? channelSurface(viewport) : { background: conversation.header });
+      }
       if (content) paintChannelPane(viewport);
       return;
     }
@@ -875,7 +876,7 @@
       if (group.accessibilityId && !/^navigation\./.test(group.accessibilityId)) break;
       const lanes = children(group);
       if (lanes.filter(n => sidebarRow(n) || (n.children.length === 1 && children(n).some(sidebarRow))).length >= 2) {
-        ui.update(group.id, fill);
+        ui.update(group.id, content ? channelSurface(group) : { background: conversation.header });
         if (content) paintChannelPane(group);
         return;
       }
@@ -899,6 +900,93 @@
     borderWidth: 0, borderColor: 0, bgBorder: 0, bgBorderWidth: 0, hairline: false,
     shadow: null, bgShadow: null, activeShadow: null, shadowOutset: null, elevation: 0, elevationColor: 0,
   };
+
+  const drawerEdge = { ...headerEdge, borderLeft: null, borderSides: null, activeBorderLeft: null,
+    activeBorderSides: null, activeBorderWidth: 0, activeBorderColor: 0, focusBorderColor: 0 };
+  const squareDrawerTop = { ...drawerEdge, radiusTopLeft: 0, radiusTopRight: 0, bgRadius: 0 };
+  const railMarkers = ["navigation.messages", "navigation.add_server", { prefix: "navigation.server:" }];
+
+  function railBranch(n) {
+    return serverRail(n) || railMarkers.some(match => ui.findDown?.(n.id, match, 7) != null);
+  }
+
+  // A separator may be an extra painted view between the two columns or a
+  // clipped outline above them in a stack. Leave named content, controls,
+  // thumbnails and the sidebar's own list separators alone.
+  function clearDrawerRule(node, between, overPanel) {
+    const layers = [];
+    for (let n = node; n && layers.length < 5;) {
+      const info = original(n);
+      if (!info || !["view", "stack"].includes(info.kind) || info.pressable || pressable(n) ||
+          (n.accessibilityId && !dividerName.test(n.accessibilityId)) || n.children.length > 1) return;
+      layers.push(n);
+      if (!n.children.length) {
+        const named = layers.some(c => dividerName.test(c.accessibilityId || ""));
+        const hairline = layers.some(c => { const h = original(c).height; return h > 0 && h <= 1; });
+        const outline = overPanel && layers.some(c => {
+          const f = original(c); return !f.opaque && !f.backplate && (f.topLeft > 0 || f.topRight > 0);
+        });
+        if (between || named || hairline || outline) {
+          for (const c of layers) ui.update(c.id, { ...plainSurface, ...drawerEdge });
+        } else if (overPanel) {
+          for (const c of layers) ui.update(c.id, drawerEdge);
+        }
+        return;
+      }
+      n = ui.node(n.children[0]);
+    }
+  }
+
+  function clearRailEdge(rail) {
+    let n = rail;
+    // Follow the outer rail shell to the server viewport. The small rule
+    // under the DM shortcut lives inside that viewport and stays untouched.
+    for (let depth = 0; n && depth < 5; depth++) {
+      const f = original(n);
+      if (serverRail(n) || !f || f.pressable || !["view", "stack", "list", "scroll"].includes(f.kind)) return;
+      ui.update(n.id, drawerEdge);
+      if (f.kind === "list" || f.kind === "scroll") return;
+      const parts = children(n), inner = parts.find(railBranch);
+      if (!inner) return;
+      for (const c of parts) if (c.id !== inner.id && (f.horizontal || f.kind === "stack")) {
+        clearDrawerRule(c, f.horizontal, f.kind === "stack");
+      }
+      n = inner;
+    }
+  }
+
+  function clearDrawerEdges(start) {
+    let branch = start, split = false;
+    for (let depth = 0; branch && depth < 12; depth++) {
+      const frame = parent(branch), f = original(frame);
+      if (!frame || frame.id === ui.root() || frame.sheet != null || f?.pressable ||
+          !["view", "stack"].includes(f?.kind) || frame.children.length > 10) break;
+      const parts = children(frame), at = frame.children.indexOf(branch.id);
+      const rail = !split && (f.horizontal || f.kind === "stack")
+        ? parts.findIndex((n, i) => i !== at && railBranch(n)) : -1;
+      if (rail >= 0) {
+        split = true;
+        clearRailEdge(parts[rail]);
+        ui.update(branch.id, squareDrawerTop);
+        tintBacking(frame, conversation.header);
+      }
+      if (!split) {
+        const margin = original(branch)?.margin;
+        // A one-pixel gutter can expose the frame's original gray fill even
+        // after its border is cleared. Keep the native layout and color the gutter.
+        if ([f.padding, margin].some(edges => edges && [edges[0], edges[1]].some(v => v > 0 && v <= 1))) {
+          tintBacking(frame, conversation.header);
+        }
+        ui.update(frame.id, squareDrawerTop);
+      } else ui.update(frame.id, drawerEdge);
+      for (let i = 0; i < parts.length; i++) {
+        if (i === at || i === rail) continue;
+        clearDrawerRule(parts[i], rail >= 0 && i > Math.min(rail, at) && i < Math.max(rail, at), f.kind === "stack" && i > at);
+      }
+      if (frame.accessibilityId === "home-shell" || frame.accessibilityId === "main-tabs") break;
+      branch = frame;
+    }
+  }
 
   function stripHeaderEdge(node) {
     const info = original(node);
@@ -937,7 +1025,7 @@
           m[3] + (control.id === title.id ? 0 : insets[3])] });
       }
     }
-    ui.update(header.id, { ...headerEdge, bg: 0, background: conversation.header });
+    ui.update(header.id, { ...squareDrawerTop, bg: 0, background: conversation.header });
     ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height: 26,
       margin: [0, 0, 0, 0], opacity: 1, background: conversation.body, pointerEvents: "none" });
   }
@@ -991,9 +1079,7 @@
       if (!frame || frame.id === ui.root() || frame.children.length > 8) break;
       const at = frame.children.indexOf(branch.id);
       const leading = children(frame).slice(0, at);
-      const rail = n => serverRail(n) || ["navigation.messages", "navigation.add_server", { prefix: "navigation.server:" }]
-        .some(match => typeof ui.findDown === "function" && ui.findDown(n.id, match, 5) != null);
-      if (original(frame)?.horizontal && leading.some(rail)) {
+      if (original(frame)?.horizontal && leading.some(railBranch)) {
         // This is the right-hand column whose top padding shows through the OS bar.
         ui.update(branch.id, { ...headerEdge, background: conversation.header, ...(info.backplate ? { bg: conversation.header } : {}) });
         break;
@@ -1099,8 +1185,25 @@
     }
   }
 
-  function paneSurface() {
-    return { ...headerEdge, bg: 0, background: conversation.body, ...barRadii(26, 0), clip: true };
+  function paneSurface(top = 26) {
+    return { ...headerEdge, bg: 0, background: conversation.body, ...barRadii(top, 0), clip: true };
+  }
+
+  function channelSurface(list, head) {
+    // In 357200 row zero is another copy of the guild toolbar. The list's
+    // top is above the title. The cap below search owns the visible corners.
+    let title = head;
+    if (list && title?.accessibilityId !== "guild.menu" && ui.findDown) {
+      const id = ui.findDown(list.id, "guild.menu", 4);
+      if (id != null) title = ui.node(id);
+    }
+    if (title?.accessibilityId === "guild.menu") {
+      const header = parent(title);
+      if (header && header.children.length === 3 && guildSeam(ui.node(header.children[2]))) {
+        return { ...paneSurface(0), ...drawerEdge };
+      }
+    }
+    return paneSurface();
   }
 
   function childOf(node, ancestorId) {
@@ -1169,11 +1272,12 @@
       viewport = shell;
     }
     for (let n = viewport, i = 0; n && n.id !== pane.id && i < 12; i++, n = parent(n)) tintBacking(n, conversation.header);
-    ui.update(viewport.id, paneSurface());
+    const surface = guild ? channelSurface(list, head) : paneSurface();
+    ui.update(viewport.id, surface);
     // A native scroll view can draw its own rectangular background over a
     // rounded wrapper. Keep both surfaces on the same outline.
     for (let n = list, d = 0; n && n.id !== viewport.id && d < 8; n = parent(n), d++) {
-      ui.update(n.id, paneSurface());
+      ui.update(n.id, surface);
     }
     rememberLayout("header-and-list", pane);
     return true;
@@ -1221,7 +1325,6 @@
     drawerBacking(panel);
     const view = panelViewport(header, panel);
     if (view && joinHeaderAndList(header, view, true)) {
-      ui.update(view.id, paneSurface());
       paintChannelPane(view);
     }
     rememberLayout("drawer", panel);
@@ -1243,6 +1346,7 @@
       paintToolbar(head);
     }
     forLive("guild.menu", paintGuildSeam);
+    if (head) clearDrawerEdges(commonFrame(head, list));
     for (const key of dockSlots) forLive(key, paintUserDock);
     let lane = list;
     for (let i = 0; i < 7; i++) {
@@ -1709,7 +1813,8 @@
     for (const name of headerNames) patch(name, { background: 0, borderWidth: 0 });
     patch("main-frame-gradient", gradients);
     forLive("main-frame-gradient", clearNamedFade);
-    patch("main-tabs-frame-border", headerEdge);
+    patch("main-tabs-frame-border", drawerEdge);
+    patch("main-tabs-frame-border-clip", squareDrawerTop);
     forLive("main-tabs-frame-border", clearFrameBorder);
     patch("composer-floating", { ...flat, gradient: null });
     for (const name of headerNames) forLive(name, paintTopInset);
@@ -1764,7 +1869,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.9.0", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.9.1", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -1772,18 +1877,15 @@
     "main-tabs-dock-frame", "main-tabs-dock-frame-content", ...dockSlots];
 
   function clearFrameBorder(node) {
-    const pending = [node], layers = [];
-    while (pending.length && layers.length < 12) {
-      const n = pending.pop(), info = original(n);
-      if (!info || info.pressable || !["view", "stack", "image"].includes(info.kind) ||
-          (n.id !== node.id && n.accessibilityId && !dividerName.test(n.accessibilityId))) return;
-      if (n.children.length > 4) return;
-      layers.push(n);
-      pending.push(...children(n));
-    }
-    if (pending.length) return;
-    for (const layer of layers) {
-      ui.update(layer.id, { ...plainSurface, ...headerEdge, ...(original(layer)?.kind === "image" ? { tint: 0 } : {}) });
+    if (node.id === ui.root()) return;
+    // Some builds place the stroke and real content under the same named
+    // clip. Strip the clip's own stroke even when it has interactive children.
+    ui.update(node.id, { ...plainSurface, ...drawerEdge, ...(original(node)?.kind === "image" ? { tint: 0 } : {}) });
+    const parts = children(node);
+    for (const part of parts) {
+      if (original(part)?.kind === "image" && !part.accessibilityId && !part.children.length &&
+          !original(part)?.pressable && !pressable(part)) ui.update(part.id, { tint: 0 });
+      else clearDrawerRule(part, true, true);
     }
   }
 
@@ -1840,6 +1942,7 @@
       if (list) joinHeaderAndList(node, list, true);
     }
     paintGuildSeam(node);
+    if (node.accessibilityId === "guild.menu") clearDrawerEdges(parent(node));
     if (recordLayouts) rememberLayout("guild-header", parent(parent(node)) || parent(node) || node);
   }
   watch("main-tabs-frame-border", clearFrameBorder);
