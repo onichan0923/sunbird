@@ -12,7 +12,7 @@ async function get(url,options) {
   return response;
 }
 async function unpack(asset){
-  const chunks=await Promise.all(asset.parts.map(async path=>(await get(path)).arrayBuffer()));
+  const chunks=await Promise.all(asset.parts.map(async path=>(await get(path+'?v='+asset.sha256)).arrayBuffer()));
   const bytes=new Uint8Array(await new Response(new Blob(chunks).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
   if(bytes.length!==asset.bytes||await sha256(bytes)!==asset.sha256)throw new Error('網頁資源校驗失敗，請重新整理。');
   return bytes;
@@ -60,7 +60,7 @@ async function input(build,r){
 onmessage=async({data:r})=>{
   let build;
   try{
-    const specs=await (await get('./loaders.json?v=072')).json();
+    const specs=await (await get('./loaders.json?v=080')).json();
     await init({module_or_path:await unpack(specs.wasm)});
     build=new Build();
     await input(build,r);
@@ -68,7 +68,7 @@ onmessage=async({data:r})=>{
     build.addLibrary('libplm.so',await unpack(specs[r.abi]));
     build.addLibrary('libshadowhook_nothing.so',new Uint8Array(await (await get('./vendor/shadow-'+r.abi+'.so')).arrayBuffer()));
     if(r.theme || r.recover){
-      const source=await (await get('./m3e-theme.js?v=072')).text();
+      const source=await (await get('./m3e-theme.js?v=080')).text();
       // The runtime reads this line from the APK before looking up installed
       // JS. The token belongs to this APK so reopening it respects later choices.
       const pause=r.recover?'// @pause-once '+crypto.randomUUID().replaceAll('-','')+'\n':'';
