@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.1
+// @version 0.11.2
 // @author onichan0923
 
 (() => {
@@ -846,25 +846,30 @@
     // actual buttons. Keep its native position when selection is not exposed.
     const lane = parent(rail);
     const backdrop = lane && children(lane).find(c => c.id !== rail.id && original(c)?.horizontal && c.children.length === 2);
+    if (!backdrop && states.every(v => typeof v !== "boolean")) return;
+    // Both parallel rows share a backing. Transparent shells let the page show
+    // around the selected pill, including the gap at either end.
     if (backdrop && lane.children.length === 2) {
+      ui.update(lane.id, flat);
       const indicator = children(backdrop)[0];
-      ui.update(lane.id,{...clearFill,bg:0,background:conversation.control,radius:20,clip:true});
-      ui.update(backdrop.id,{...clearFill,bg:0});
       for (const n of descendants(backdrop,3,18)) {
-        if (n.id === backdrop.id || !["view","stack"].includes(kindOf(n))) continue;
-        ui.update(n.id,{...clearFill,bg:0,background:n.id===indicator.id && states.every(v=>typeof v !== "boolean") ? palette.pressed : 0,radius:16});
+        if (!["view","stack"].includes(kindOf(n))) continue;
+        const movingPill = n.id === indicator.id && states.every(v => typeof v !== "boolean");
+        ui.update(n.id,{...flat,background:movingPill ? palette.pressed : 0,radius:18});
       }
     }
-    if (!backdrop && states.every(v => typeof v !== "boolean")) return;
-    if (root.id !== rail.id && root.id !== lane?.id) ui.update(root.id,{...clearFill,bg:0});
-    ui.update(rail.id,{...clearFill,background:backdrop ? 0 : conversation.control,bg:0,radius:20,clip:true});
+    for (let n = backdrop ? parent(lane) : parent(rail); shellNode(n) && n.children.length === 1; n = parent(n)) {
+      ui.update(n.id,flat);
+      if (n.id === root.id) break;
+    }
+    ui.update(rail.id,flat);
     for (const n of descendants(rail,4,32)) {
       if (n.id === rail.id || tabs.some(t => t.id === n.id) || !["view","stack"].includes(kindOf(n))) continue;
-      ui.update(n.id,{...clearFill,bg:0});
+      ui.update(n.id,flat);
     }
     tabs.forEach((tab,i) => {
       const checked = states[i] ?? (typeof states[1-i] === "boolean" && !states[1-i]);
-      ui.update(tab.id,{...clearFill,bg:0,background:checked ? palette.accent : 0,radius:18});
+      ui.update(tab.id,{...flat,background:checked ? palette.accent : 0,radius:18});
       for (const n of descendants(tab,4,14)) if (kindOf(n) === "text")
         ui.update(n.id,{background:0,bg:0,color:checked ? palette.onAccent : palette.ink});
     });
@@ -2033,7 +2038,8 @@
   }
 
   function threadNotice(card, namedButton = null) {
-    if (!card || card.sheet != null || card.list != null || !["view","stack"].includes(kindOf(card)) || !shellNode(card)) return false;
+    if (!card || card.sheet != null || (card.list != null && !namedButton) ||
+        !["view","stack"].includes(kindOf(card)) || !shellNode(card)) return false;
     const parts = children(card).filter(n => ["text","markup"].includes(kindOf(n)) ||
       (n.children.length && descendants(n,5,24).some(c => ["text","markup"].includes(kindOf(c)))));
     if (parts.length !== 2) return false;
@@ -2059,18 +2065,28 @@
   }
   function paintThreadAction(button) {
     paintButton(button,palette.accent,palette.onAccent);
-    // Native button backgrounds can redraw after a surface update. Place a
-    // noninteractive plate beneath the original label on its own paint layer.
-    const label = descendants(button,5,24).find(n => ["text","markup"].includes(kindOf(n)));
+    const label = actionLabel(button);
     if (!label) return;
-    ui.update(label.id,{bg:0,background:0,color:palette.onAccent});
-    if (!button.children.length || !ui.mount) return;
-    const before = button.children[0];
-    if (threadSkin?.id === button.id && threadSkin.before === before && threadSkin.label === label.id && threadSkin.color === palette.accent) return;
+    const face = {...clearFill, background:palette.accent, activeBackground:palette.accent};
+    ui.update(label.id,{...face,color:palette.onAccent});
+    if (!ui.mount || button.id === label.id) return;
+    let branch = label;
+    while (branch.parent != null && branch.parent !== button.id) {
+      const wrapper = parent(branch);
+      if (!wrapper) return;
+      if (original(wrapper)?.opaque || original(wrapper)?.gradient) ui.update(wrapper.id,face);
+      branch = wrapper;
+    }
+    if (threadSkin?.id === button.id && threadSkin.before === branch.id && threadSkin.label === label.id && threadSkin.color === palette.accent) return;
     clearThreadSkin();
-    threadSkin = {id:button.id,before,label:label.id,color:palette.accent,remove:ui.mount(button.id,
-      switchFace({width:"fill",height:"fill",radius:original(button)?.topLeft || 8,background:palette.accent}),{before})};
+    threadSkin = {id:button.id,before:branch.id,label:label.id,color:palette.accent,remove:ui.mount(button.id,
+      switchFace({width:"fill",height:"fill",radius:original(button)?.topLeft || 8,background:palette.accent}),{before:branch.id})};
   }
+
+  function actionLabel(button) {
+    return button && descendants(button,6,48).find(n => kindOf(n) === "text");
+  }
+
   function namedThreadButton(anchor) {
     if (anchor.accessibilityId === "empty-chat") {
       for (const n of descendants(anchor,7,52)) if (threadNotice(n)) return;
@@ -2080,7 +2096,7 @@
         if (threadNotice(n,anchor)) return;
       }
       const action=actionIn(anchor) || (interactive(parent(anchor)) ? parent(anchor) : null);
-      if (action && anchor.sheet == null && anchor.list == null) paintThreadAction(action);
+      if (action && anchor.sheet == null) paintThreadAction(action);
     }
   }
   function chatFooter(list) {
@@ -2208,26 +2224,44 @@
     }
   }
 
+  const inboxPages = ["inbox-screen","inbox-feed","inbox-page"];
+  const inboxRows = ["inbox-row","inbox-section","inbox-title","inbox.title","recent-activity-text"];
+
   function inbox(anchor) {
     let root = anchor;
-    for (let n=anchor, d=0; n && n.id!==ui.root() && d<16; n=parent(n),d++) {
-      if (["inbox-feed","inbox-page","inbox-screen"].includes(n.accessibilityId)) root=n;
+    for (let n = anchor, depth = 0; n && n.id !== ui.root() && depth < 18; n = parent(n), depth++) {
+      if (inboxPages.includes(n.accessibilityId)) root = n;
     }
-    if (root===anchor && anchor.list!=null) root=ui.node(anchor.list) || anchor;
-    const section = anchor.accessibilityId?.startsWith("request-actions-") ? anchor : root;
-    const nodes = descendants(section,11,360);
-    for (const n of nodes) {
-      if (n.accessibilityId === "inbox-screen" || n.accessibilityId === "inbox-feed") ui.update(n.id,{background:conversation.body});
-      if (n.children.length !== 2 || !original(n)?.horizontal) continue;
-      const buttons = children(n).map(actionIn);
-      if (!buttons.every(b => b && buttonLabel(b))) continue;
-      // Friend request actions share one horizontal row, Accept followed by Ignore.
-      if (!n.accessibilityId?.startsWith("request-actions-") && !descendants(n,4,16).some(c => c.accessibilityId === "ignore") &&
-          !descendants(buttons[0],3,12).some(c => original(c)?.brandFill)) continue;
-      paintButton(buttons[0],palette.accent,palette.onAccent);
-      paintButton(buttons[1],palette.pressed,palette.ink);
+    const isRoot = inboxPages.includes(root.accessibilityId);
+    if (isRoot) ui.update(root.id,{...flat,background:conversation.body});
+    const namedActions = anchor.accessibilityId?.startsWith("request-actions-");
+    const section = namedActions || inboxRows.includes(anchor.accessibilityId) ? anchor : root;
+    for (const n of descendants(section,14,640)) {
+      const id = n.accessibilityId || "", kind = kindOf(n);
+      if (inboxPages.includes(id) || (isRoot && ["list","scroll"].includes(kind))) {
+        ui.update(n.id,{...flat,background:conversation.body});
+      } else if (isRoot && !interactive(n) && ["view","stack"].includes(kind) &&
+          (original(n)?.opaque || original(n)?.backplate) && !original(n)?.topLeft) {
+        ui.update(n.id,{background:0,backgroundGradient:null});
+      }
+      if (id === "inbox-title" || id === "inbox.title") {
+        for (const title of descendants(n,3,12)) if (kindOf(title) === "text") ui.update(title.id,{color:palette.ink});
+      }
+      const pair = children(n);
+      if (pair.length !== 2 || !(id.startsWith("request-actions-") || original(n)?.horizontal)) continue;
+      const buttons = pair.map(actionIn);
+      const labels = buttons.map(actionLabel);
+      if (!labels.every(Boolean)) continue;
+      if (!namedActions && !id.startsWith("request-actions-") && !descendants(n,5,36).some(c =>
+          c.accessibilityId === "ignore" || original(c)?.brandFill)) continue;
+      buttons.forEach((button,i) => {
+        const background = i ? palette.pressed : palette.accent;
+        const color = i ? palette.ink : palette.onAccent;
+        paintButton(button,background,color);
+        ui.update(labels[i].id,{background,color});
+      });
     }
-    rememberLayout("inbox",root);
+    if (isRoot) rememberLayout("inbox",root);
   }
 
   const pickerAnchors = ["expression.search", "xp.grid", "xp-handle", "expression-rail", "media-grid",
@@ -2516,7 +2550,7 @@
     ...["create-thread","empty-chat"].map(n => [n,namedThreadButton]),
     ...dmControls.map(n => [n,dmActions]),
     ...["guild-sheet","guild-sheet-name","tab-invite","tab-settings"].map(n => [n,guildOptions]),
-    ...["inbox-screen","inbox-feed","inbox-page","inbox.title",{prefix:"request-actions-"}].map(n => [n,inbox]),
+    ...[...inboxPages,...inboxRows,{prefix:"request-actions-"}].map(n => [n,inbox]),
     ["social-tabs",paintTabs],
     ...["social-sensitive","social-spam","social-sharing","social-servers","social-pages","social-pager","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
   ];
@@ -2592,7 +2626,7 @@
     }
     if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
     if (name && (name === "social-tabs" || name === "create-thread" || name === "empty-chat" || name === "guild-sheet" ||
-        dmControls.includes(name) || name === "inbox-feed" || name === "inbox-screen" || name.startsWith("request-actions-"))) {
+        dmControls.includes(name) || inboxPages.includes(name) || inboxRows.includes(name) || name.startsWith("request-actions-"))) {
       const item=ui.node(event.node);
       if (item?.accessibilityId===name) for (const [match,visit] of extraSurfaces) {
         if (match===name || (match.prefix && name.startsWith(match.prefix))) visit(item);
