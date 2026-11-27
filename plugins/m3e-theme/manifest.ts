@@ -1,6 +1,6 @@
 export default {
    description: "Material 3 Expressive theme with Android system appearance and dynamic color.",
-   version: "0.11.13",
+   version: "0.11.14",
    author: "onichan0923",
    enabled: false,
    permissions: { uiTree: true, bridge: true },
