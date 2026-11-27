@@ -70,7 +70,7 @@ form.onsubmit=event=>{
   get('progress').hidden=false;get('status').textContent='準備瀏覽器修補器…';get('controls').disabled=true;
   get('output').scrollIntoView({block:'nearest'});
   try {
-    worker=new Worker(new URL('./worker.js?v=115',import.meta.url),{type:'module'});
+    worker=new Worker(new URL('./worker.js?v=116',import.meta.url),{type:'module'});
     worker.onmessage=({data})=>{
       if(data.kind==='error')return fail(data.message,data.download);
       if(data.kind==='progress'){get('status').textContent=data.message;return;}

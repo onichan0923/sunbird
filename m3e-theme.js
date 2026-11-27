@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.5
+// @version 0.11.6
 // @author onichan0923
 
 (() => {
@@ -235,14 +235,26 @@
     shadowOutset: null, activeBorderWidth: 0, activeBorderColor: 0, elevationColor: 0,
   };
 
-  function paintDock(bar) {
+  function aboveChatList(host, branch) {
+    return shellNode(host) && kindOf(host) === "view" && !original(host)?.horizontal && host.children.length <= 16 &&
+      children(host).some(n => n.id !== branch.id && contains(n, c =>
+        ["list", "scroll"].includes(kindOf(c)) && (c.id === lastList || c.accessibilityId === "chat-list" ||
+          c.children.slice(0, 5).some(id => contains(ui.node(id), x => x.accessibilityId?.startsWith("message."), 3))), 4));
+  }
+
+  function paintDock(bar, notice = false) {
     let branch = bar;
     for (let depth = 0; depth < 6; depth++) {
       const host = parent(branch);
+      if (notice && aboveChatList(host, branch)) {
+        ui.update(host.id, { background: conversation.body, ...(original(host)?.backplate ? { bg: conversation.body } : {}) });
+        break;
+      }
       if (!shellNode(host) || host.list != null || host.sheet != null ||
-          (host.accessibilityId && !/^composer(?:[.:-]|$)/.test(host.accessibilityId))) break;
+          (host.accessibilityId && !/^composer(?:[.:-]|$)/.test(host.accessibilityId) &&
+           !(notice && /^(?:thread-footer|chat-footer|chat-bottom|channel-footer)(?:$|[.:-])/.test(host.accessibilityId)))) break;
       const others = children(host).filter(n => n.id !== branch.id);
-      const backing = n => !n.accessibilityId && shellNode(n) &&
+      const backing = n => !n.accessibilityId && shellNode(n) && !interactive(n) &&
         (!n.children.length || (n.children.length === 1 && children(n).every(c => shellNode(c) && !c.accessibilityId && !c.children.length)));
       // On release builds anonymous backdrop nodes have no kind. Clear their
       // paint, never their visibility or size, so an untagged child stays usable.
@@ -252,8 +264,9 @@
         if (contains(n, c => c.accessibilityId === contextCancel)) continue;
         for (const layer of [n, ...children(n)]) ui.update(layer.id, { ...plainSurface, blur: null });
       }
-      const dock = host.accessibilityId === "composer-floating" || others.some(n => n.accessibilityId === "guard-gradient") ||
-        (others.length === 2 && others.every(backing));
+      // An unmeasured stack may be a full-screen overlay above the messages.
+      const dock = (notice && (original(host)?.height > 0 || aboveChatList(parent(host), host))) || host.accessibilityId === "composer-floating" ||
+        (!notice && (others.some(n => n.accessibilityId === "guard-gradient") || (others.length === 2 && others.every(backing))));
       ui.update(host.id, { ...plainSurface, blur: null, background: dock ? conversation.body : 0, radius: 0 });
       branch = host;
     }
@@ -1276,26 +1289,86 @@
     return guildSeam(edge) ? edge : null;
   }
 
+  const categoryInsets = new Map();
+  function restoreCategory(listId) {
+    const previous = categoryInsets.get(listId);
+    if (!previous) return;
+    for (const [id, keys] of previous) {
+      const node = ui.node(id);
+      if (!node) continue;
+      const source = original(node);
+      ui.update(id, Object.fromEntries(keys.map(key => [key, source?.[key] || 0])));
+    }
+    categoryInsets.delete(listId);
+  }
+
+  function compactFirstCategory(list) {
+    const [header, row] = list.children.slice(0, 2).map(id => ui.node(id));
+    // The first visible row of a recycled list need not be the first category.
+    const afterToolbar = header && ui.findDown?.(header.id, "guild.menu", 4) != null;
+    const path = [];
+    if (afterToolbar) {
+      let n = row;
+      while (n && path.length < 5 && shellNode(n)) {
+        path.push(n);
+        const name = n.accessibilityId || "";
+        if (name.startsWith("navigation.category:") ||
+            (name.startsWith("navigation.channel:") && original(n)?.pressable && original(n)?.horizontal &&
+             children(n).some(c => children(c)[0] && kindOf(children(c)[0]) === "text"))) break;
+        if (name || n.children.length !== 1) { path.length = 0; break; }
+        n = ui.node(n.children[0]);
+      }
+    }
+    const target = path[path.length - 1];
+    if (!/^navigation\.(?:category|channel):/.test(target?.accessibilityId || "")) path.length = 0;
+    const edits = new Map();
+    let budget = 16;
+    for (const n of path) {
+      const info = original(n), props = {};
+      for (const key of ["margin", "padding"]) {
+        const edges = info?.[key];
+        if (!edges || edges[1] <= 2 || budget <= 0) continue;
+        const trim = Math.min(edges[1] - 2, budget);
+        props[key] = [edges[0], edges[1] - trim, edges[2], edges[3]];
+        budget -= trim;
+      }
+      if (Object.keys(props).length) edits.set(n.id, props);
+    }
+    const previous = categoryInsets.get(list.id);
+    if (previous) {
+      for (const [id, keys] of previous) {
+        const missing = keys.filter(key => !edits.get(id)?.[key]);
+        const node = missing.length && ui.node(id);
+        if (node) ui.update(id, Object.fromEntries(missing.map(key => [key, original(node)?.[key] || 0])));
+      }
+    }
+    if (!edits.size) { categoryInsets.delete(list.id); return; }
+    categoryInsets.set(list.id, [...edits].map(([id, props]) => [id, Object.keys(props)]));
+    for (const [id, props] of edits) ui.update(id, props);
+  }
+
   function paintGuildSeam(title) {
     const edge = guildHeaderEdge(title);
     if (!edge) return;
     const header = parent(title);
-    const insets = original(header)?.padding;
-    if (insets && (insets[0] || insets[2] || insets[3])) {
-      // Move the header's horizontal inset onto the controls. The cap then
-      // spans the entire column, including the space beside the search field.
-      ui.update(header.id, { padding: [0, insets[1], 0, 0] });
-      for (const control of children(header).slice(0, 2)) {
-        const m = original(control)?.margin || [0, 0, 0, 0];
-        ui.update(control.id, { margin: [m[0] + insets[0], m[1], m[2] + insets[2],
-          m[3] + (control.id === title.id ? 0 : Math.min(insets[3], 4))] });
-      }
+    const insets = original(header)?.padding || [0, 0, 0, 0];
+    const actions = ui.node(header.children[1]);
+    ui.update(header.id, { ...plainSurface, ...squareDrawerTop, blur: null,
+      padding: [0, insets[1], 0, 0], background: conversation.header });
+    for (const control of [title, actions]) {
+      const m = original(control)?.margin || [0, 0, 0, 0];
+      const bottom = control.id === title.id ? m[3] : Math.min(4, m[3] + insets[3]);
+      ui.update(control.id, { margin: [m[0] + insets[0], m[1], m[2] + insets[2], bottom] });
     }
-    ui.update(header.id, { ...squareDrawerTop, bg: 0, background: conversation.header });
     markSurface(header, "seam", title.id);
-    const height = ui.androidControlSurfaces ? 0 : 26;
-    ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height,
-      margin: [0, 0, 0, 0], opacity: 1, background: conversation.body, pointerEvents: "none" });
+    markSurface(actions, "seam-actions", actions.children[0]);
+    if (ui.androidControlSurfaces) {
+      ui.update(edge.id, { ...plainSurface, ...drawerEdge, blur: null, gone: true,
+        minHeight: 0, height: 0, margin: 0, padding: 0, opacity: 0, pointerEvents: "none" });
+    } else {
+      ui.update(edge.id, { ...plainSurface, ...barRadii(26, 0), width: "fill", height: 26,
+        margin: 0, background: conversation.body, pointerEvents: "none" });
+    }
   }
 
   function clearEdge(node, atSeam = false, depth = 0) {
@@ -1607,6 +1680,7 @@
     rememberLayout("channel-viewport", parent(list) || list);
     if (seenPanels.size >= 64) seenPanels.clear();
     seenPanels.set(list.id, Date.now());
+    compactFirstCategory(list);
     if (!head) adjacentToolbar(list, true);
     if (head) {
       rememberLayout("channel-pane", commonFrame(head, list));
@@ -2090,7 +2164,8 @@
     if (namedButton && namedButton !== card && namedButton.id !== buttonBranch.id && namedButton.id !== button.id &&
         !childOf(namedButton,buttonBranch.id) && !childOf(button,namedButton.id)) return false;
     rememberLayout("thread-footer",card);
-    ui.update(card.id, { ...plainSurface, blur: null, background: palette.row, radius: 18 });
+    paintDock(card, true);
+    ui.update(card.id, { ...plainSurface, blur: null, background: conversation.control, ...barRadii(18,18), clip: true });
     for (const branch of parts) if (branch.id !== button.id && shellNode(branch)) ui.update(branch.id, { ...plainSurface, blur: null });
     ui.update(note.id, {color: palette.ink});
     paintButton(button, palette.accent, palette.onAccent);
@@ -2501,7 +2576,7 @@
     },
     copyLayout: {
       type: "button", title: "複製介面結構",
-      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.5", layouts: Object.fromEntries(layouts) })),
+      onPress: () => phoenix.ui.copy(JSON.stringify({ version: "0.11.6", layouts: Object.fromEntries(layouts) })),
     },
   });
   recordLayouts = settings.inspect === true;
@@ -2638,6 +2713,10 @@
   }));
   watchers.push(ui.onEvent("pageSettle", () => {
     clearSurfaceTags();
+    for (const id of categoryInsets.keys()) {
+      const list = ui.node(id);
+      if (list) compactFirstCategory(list); else categoryInsets.delete(id);
+    }
     forLive("composer",styleComposer);
     forLive(requestActions,inbox);
     forLive("social-tabs",paintTabs);
@@ -2758,6 +2837,7 @@
     stopPickerWatch();
     clearPickerCorners(true);
     clearSurfaceTags(true);
+    for (const id of categoryInsets.keys()) restoreCategory(id);
     stopGuildWatch();
     removeSkins(true);
     clearEditing();
