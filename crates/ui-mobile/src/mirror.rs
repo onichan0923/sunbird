@@ -84,6 +84,11 @@ impl Surface {
    }
 
    #[must_use]
+   pub const fn background_colors(&self) -> [Option<u32>; 2] {
+      [self.fills[1], self.fills[2]]
+   }
+
+   #[must_use]
    pub fn brand_fill(&self) -> bool {
       self
          .fills
@@ -683,6 +688,16 @@ mod tests {
       let surface = mirror.surface(27).unwrap();
       assert!(surface.backplate && !surface.gradient() && !surface.opaque);
       assert_eq!(surface.height, None);
+      mirror.apply(
+         &[Op::Update {
+            id:    27,
+            props: vec![(BACKGROUND, Value::I64(0x20FA_A61A)), (BG, Value::Null)],
+         }],
+         false,
+      );
+      let surface = mirror.surface(27).unwrap();
+      assert_eq!(surface.background_colors(), [Some(0x20FA_A61A), None]);
+      assert_eq!(surface.fill(), None);
       mirror.apply(&[Op::Delete { ids: vec![27] }], false);
       assert!(mirror.surface(27).is_none());
    }

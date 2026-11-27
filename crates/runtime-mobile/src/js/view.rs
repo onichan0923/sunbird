@@ -373,6 +373,9 @@ pub fn add_view_queries<'js>(ctx: &Ctx<'js>, ui: &Object<'js>) -> rquickjs::Resu
             }
             obj.set("brandFill", surface.brand_fill())?;
             obj.set("fill", surface.fill().map(f64::from))?;
+            let [background, bg] = surface.background_colors();
+            obj.set("background", background.map(f64::from))?;
+            obj.set("bg", bg.map(f64::from))?;
             obj.set("gradient", surface.gradient())?;
             Ok(obj.into_value())
          },
