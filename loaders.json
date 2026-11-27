@@ -1,7 +1,7 @@
 {
   "arm64": {
-    "bytes": 4167184,
-    "sha256": "f13d4c5bab21d7590a0baeb969ddc936fd764afeae5369dede9a1db3e3c86186",
+    "bytes": 4170672,
+    "sha256": "e26ce6a1926f6917ffb99d270ff2cdd35b81077b3504e7b04656237668148a3e",
     "parts": [
       "files/arm64-0.bin",
       "files/arm64-1.bin",
@@ -22,8 +22,8 @@
     ]
   },
   "armv7": {
-    "bytes": 3257972,
-    "sha256": "250a24f0e3a3a1db11b9b9dd7cd0ab8457efa7177caf8c323398d26daf3dadaa",
+    "bytes": 3259796,
+    "sha256": "d2bd940e7156db882029f814f97a9b983409d186338e369868d714119ad313bb",
     "parts": [
       "files/armv7-0.bin",
       "files/armv7-1.bin",

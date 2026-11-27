@@ -1,5 +1,5 @@
 // @description Material 3 Expressive theme with Android system appearance and dynamic color.
-// @version 0.11.0
+// @version 0.11.1
 // @author onichan0923
 
 (() => {
@@ -38,7 +38,7 @@
   const channelPanel = "channel-list-panel";
   const guildHeads = ["guild.menu", "guild-header-row", "guild-title", "guild-search"];
   const contextCancel = "composer.context.cancel";
-  const detailMatches = ["account-age-group", "notif-in-app", "notif-behavior", "notif-other", "notif-system",
+  const detailMatches = ["account-username","account-email","account-phone","account-mfa","account-age-group", "notif-in-app", "notif-behavior", "notif-other", "notif-system",
     "chat-swipe", "chat-media", "chat-camera", "chat-video-quality", "advanced-launch-pad", "contact-sync", "sensitive-content",
     "friend-request-settings", "build-status-launch-client"];
   const watchers = [];
@@ -500,8 +500,18 @@
   }
 
   function switchParts(row) {
-    if (isSocialTab(row)) return null;
-    if (["radio","radiogroup"].includes(original(row)?.role)) return null;
+    if (!row || isSocialTab(row) || ["radio","radiogroup"].includes(original(row)?.role)) return null;
+    // A row may expose the checked state on itself, its accessory, or a nested switch.
+    const semantic = descendants(row, 4, 18).find(n => original(n)?.role === "switch");
+    if (semantic && (semantic.id === row.id || (original(row)?.horizontal || interactive(row))) &&
+        !descendants(row, 4, 18).some(n => n.id !== semantic.id && original(n)?.role === "switch")) {
+      const track = descendants(semantic, 5, 20).find(n => {
+        const knob = n.children.length === 1 && ui.node(n.children[0]);
+        const h = original(n)?.height, kh = original(knob)?.height;
+        return knob && shellNode(n) && shellNode(knob) && !knob.children.length && h >= 22 && h <= 36 && kh >= 12 && kh <= 30;
+      });
+      if (track && parent(track)) return {track, knob: ui.node(track.children[0]), control: semantic};
+    }
     const inner = row.children.length === 1 ? ui.node(row.children[0]) : row;
     const parts = children(inner);
     if (parts.length < 2 || parts.length > 3) return null;
@@ -599,9 +609,10 @@
       for (const [id, owner] of switchOwners) if (!ui.node(owner)) switchOwners.delete(id);
     }
     switchOwners.set(row.id, row.id);
+    if (toggle.control) switchOwners.set(toggle.control.id, row.id);
     switchOwners.set(toggle.track.id, row.id);
     const last = switchSkins.get(toggle.track.id);
-    const checked = [row.checked, toggle.track.checked, reported,
+    const checked = [reported, toggle.control?.checked, row.checked, toggle.track.checked,
       last && last.knob === toggle.knob.id ? last.checked : null].find(v => typeof v === "boolean");
     if (typeof checked === "boolean" && ui.mount) {
       liveSwitch(toggle, checked);
@@ -784,20 +795,79 @@
     return true;
   }
 
+  function preferenceGroup(group) {
+    // Account value rows can contain a title, a value and chevron in separate
+    // wrappers. Verify each row has one action and a label before styling the group.
+    const rows = children(group).filter(n => !divider(n));
+    if (!rows.length || rows.length > 16) return false;
+    const actions = rows.map(row => {
+      let n = row;
+      for (let d = 0; n && d < 5; d++) {
+        if (isSocialTab(n) || ["radio","radiogroup"].includes(original(n)?.role)) return null;
+        if ((interactive(n) || ["button","switch"].includes(original(n)?.role)) &&
+            descendants(n,4,20).some(c => kindOf(c) === "text")) return n;
+        n = n.children.length === 1 ? ui.node(n.children[0]) : null;
+      }
+      return null;
+    });
+    if (!actions.every(Boolean)) return false;
+    const ids = new Set(rows.map(n => n.id));
+    styleGroup(group, n => !!n && ids.has(n.id));
+    rows.forEach((row,i) => {
+      const action = actions[i];
+      clearRowFace(row);
+      const toggle = switchParts(action) || switchParts(row);
+      if (toggle) tintSwitch(action,toggle);
+      for (const n of descendants(action, 4, 28)) {
+        if (n.id === row.id || (toggle && (n.id === toggle.track.id || n.id === toggle.knob.id || childOf(n,toggle.track.id)))) continue;
+        if (["view","stack"].includes(kindOf(n)) && n.children.length &&
+            (n.id === action.id || original(n)?.horizontal) && (original(n)?.opaque || original(n)?.backplate)) {
+          ui.update(n.id,{background:0,bg:0,backgroundGradient:null});
+        }
+      }
+    });
+    return true;
+  }
+
   function paintTabs(root) {
-    const all = descendants(root, 4, 28);
+    if (!root) return;
+    const all = descendants(root,5,42);
     const tabs = all.filter(n => n.id !== root.id && original(n)?.role === "tab");
     if (!tabs.length) {
-      const rails = all.filter(n => children(n).filter(c => interactive(c) && buttonLabel(c)).length === 2);
-      if (rails.length) tabs.push(...children(rails[0]).filter(c => interactive(c) && buttonLabel(c)));
+      const rail = all.find(n => children(n).filter(c => interactive(c) && buttonLabel(c)).length === 2);
+      if (rail) tabs.push(...children(rail).filter(c => interactive(c) && buttonLabel(c)));
     }
     if (tabs.length !== 2) return;
-    ui.update(root.id, { background: palette.row, bg: 0, radius: 20 });
-    for (const tab of tabs) {
-      const state = original(tab)?.selected ?? tab.checked;
-      if (typeof state === "boolean") ui.update(tab.id, { background: state ? palette.pressed : 0, radius: 16 });
-      for (const n of descendants(tab, 3, 10)) if (kindOf(n) === "text") ui.update(n.id, {color: state === false ? palette.muted : palette.accent});
+    let rail = parent(tabs[0]);
+    while (rail && rail.id !== root.id && !childOf(tabs[1],rail.id)) rail = parent(rail);
+    if (!rail) return;
+    const states = tabs.map(n => original(n)?.selected ?? n.checked);
+    // In 357200 the animated indicator is in a parallel lane behind the two
+    // actual buttons. Keep its native position when selection is not exposed.
+    const lane = parent(rail);
+    const backdrop = lane && children(lane).find(c => c.id !== rail.id && original(c)?.horizontal && c.children.length === 2);
+    if (backdrop && lane.children.length === 2) {
+      const indicator = children(backdrop)[0];
+      ui.update(lane.id,{...clearFill,bg:0,background:conversation.control,radius:20,clip:true});
+      ui.update(backdrop.id,{...clearFill,bg:0});
+      for (const n of descendants(backdrop,3,18)) {
+        if (n.id === backdrop.id || !["view","stack"].includes(kindOf(n))) continue;
+        ui.update(n.id,{...clearFill,bg:0,background:n.id===indicator.id && states.every(v=>typeof v !== "boolean") ? palette.pressed : 0,radius:16});
+      }
     }
+    if (!backdrop && states.every(v => typeof v !== "boolean")) return;
+    if (root.id !== rail.id && root.id !== lane?.id) ui.update(root.id,{...clearFill,bg:0});
+    ui.update(rail.id,{...clearFill,background:backdrop ? 0 : conversation.control,bg:0,radius:20,clip:true});
+    for (const n of descendants(rail,4,32)) {
+      if (n.id === rail.id || tabs.some(t => t.id === n.id) || !["view","stack"].includes(kindOf(n))) continue;
+      ui.update(n.id,{...clearFill,bg:0});
+    }
+    tabs.forEach((tab,i) => {
+      const checked = states[i] ?? (typeof states[1-i] === "boolean" && !states[1-i]);
+      ui.update(tab.id,{...clearFill,bg:0,background:checked ? palette.accent : 0,radius:18});
+      for (const n of descendants(tab,4,14)) if (kindOf(n) === "text")
+        ui.update(n.id,{background:0,bg:0,color:checked ? palette.onAccent : palette.ink});
+    });
   }
 
   function refreshTabs(tab) {
@@ -815,19 +885,20 @@
     if (/content|social/.test(route)) {
       forLive("social-tabs", paintTabs);
       const first = ui.node(list.children[0]);
-      if (first) paintTabs(first);
+      if (first && (list.accessibilityId === "social-pages" || children(list).some(n => n.accessibilityId === "social-pager" || kindOf(n) === "other"))) paintTabs(first);
     }
     const painted = new Set();
-    for (let budget = 450; work.length && budget > 0; budget--) {
+    for (let budget = 700; work.length && budget > 0; budget--) {
       const [node, depth] = work.pop();
-      if (depth > 10 || !node.children.length || node.accessibilityId === searchId) continue;
+      if (depth > 17 || !node.children.length || node.accessibilityId === searchId) continue;
       if (isSocialTab(node)) continue;
-      if (radioGroup(node) || privacyRows(node)) continue;
+      if (radioGroup(node) || preferenceGroup(node) || privacyRows(node)) continue;
       const toggle = switchParts(node);
       if (toggle && !painted.has(toggle.track.id)) {
         painted.add(toggle.track.id);
         ui.update(node.id, { background: palette.row });
         tintSettingsRow(node);
+        tintSwitch(node,toggle);
         if (connection) {
           let block = parent(node);
           for (let n = 0; n < 3 && shellNode(block) && block.id !== list.id; n++, block = parent(block)) {
@@ -846,7 +917,8 @@
         }
         continue;
       }
-      for (const n of children(node)) if (shellNode(n)) work.push([n, depth + 1]);
+      for (const n of children(node)) if (n.children.length &&
+          !["image","text","markup","input","sheet","modal","navigator"].includes(kindOf(n))) work.push([n, depth + 1]);
     }
   }
 
@@ -947,6 +1019,9 @@
 
   function detailRow(node) {
     if (node.children.length === 1 && settingsRow(node)) styleSettings(node);
+    if ((node.accessibilityId || "").startsWith("account-")) {
+      for (let n=node,d=0; n && d<7; n=parent(n),d++) if (preferenceGroup(n)) break;
+    }
   }
 
   function styleMenu(node) {
@@ -1954,47 +2029,73 @@
 
   function actionIn(n) {
     if (!n) return null;
-    return descendants(n, 3, 10).find(c => interactive(c) || original(c)?.role === "button") || null;
+    return descendants(n, 5, 22).find(c => interactive(c) || original(c)?.role === "button") || null;
   }
 
   function threadNotice(card, namedButton = null) {
-    if (!card || card.sheet != null || card.list != null || !shellNode(card)) return false;
-    const parts = children(card).filter(n => kindOf(n) === "text" || n.children.length);
+    if (!card || card.sheet != null || card.list != null || !["view","stack"].includes(kindOf(card)) || !shellNode(card)) return false;
+    const parts = children(card).filter(n => ["text","markup"].includes(kindOf(n)) ||
+      (n.children.length && descendants(n,5,24).some(c => ["text","markup"].includes(kindOf(c)))));
     if (parts.length !== 2) return false;
     const [noteBranch, buttonBranch] = parts;
-    const notes = descendants(noteBranch,3,10);
-    const note = notes.find(n => kindOf(n) === "text");
+    const notes = descendants(noteBranch,5,20);
+    const note = notes.find(n => ["text","markup"].includes(kindOf(n)));
     const button = actionIn(buttonBranch) || (namedButton && (buttonBranch.id === namedButton.id || childOf(namedButton,buttonBranch.id)) ? buttonBranch : null);
-    if (!note || !button || notes.some(interactive) || !descendants(button,4,12).some(n => kindOf(n) === "text")) return false;
+    if (!note || !button || notes.some(interactive) || !descendants(button,5,20).some(n => ["text","markup"].includes(kindOf(n)))) return false;
+    if (!namedButton && (original(card)?.horizontal || notes.some(n => kindOf(n) === "image") ||
+        descendants(card,5,45).some(n => kindOf(n) === "input" || ["search.entry","guild.menu",...headerNames].includes(n.accessibilityId)))) return false;
     if (namedButton && namedButton !== card && namedButton.id !== buttonBranch.id && namedButton.id !== button.id &&
         !childOf(namedButton,buttonBranch.id) && !childOf(button,namedButton.id)) return false;
+    rememberLayout("thread-footer",card);
     ui.update(card.id, { ...flat, background: palette.row, radius: 18 });
     ui.update(note.id, {color: palette.ink});
-    paintButton(button,palette.accent,palette.onAccent);
+    paintThreadAction(button);
     return true;
   }
 
+  let threadSkin;
+  function clearThreadSkin() {
+    if (threadSkin) { threadSkin.remove(); threadSkin = null; }
+  }
+  function paintThreadAction(button) {
+    paintButton(button,palette.accent,palette.onAccent);
+    // Native button backgrounds can redraw after a surface update. Place a
+    // noninteractive plate beneath the original label on its own paint layer.
+    const label = descendants(button,5,24).find(n => ["text","markup"].includes(kindOf(n)));
+    if (!label) return;
+    ui.update(label.id,{bg:0,background:0,color:palette.onAccent});
+    if (!button.children.length || !ui.mount) return;
+    const before = button.children[0];
+    if (threadSkin?.id === button.id && threadSkin.before === before && threadSkin.label === label.id && threadSkin.color === palette.accent) return;
+    clearThreadSkin();
+    threadSkin = {id:button.id,before,label:label.id,color:palette.accent,remove:ui.mount(button.id,
+      switchFace({width:"fill",height:"fill",radius:original(button)?.topLeft || 8,background:palette.accent}),{before})};
+  }
   function namedThreadButton(anchor) {
     if (anchor.accessibilityId === "empty-chat") {
-      for (const n of descendants(anchor,5,24)) if (threadNotice(n)) return;
+      for (const n of descendants(anchor,7,52)) if (threadNotice(n)) return;
     } else {
-      for (let n = anchor, d = 0; n && d < 7; n = parent(n), d++) {
+      for (let n = anchor, d = 0; n && d < 8; n = parent(n), d++) {
         if (n.id === ui.root() || n.sheet != null) break;
         if (threadNotice(n,anchor)) return;
       }
+      const action=actionIn(anchor) || (interactive(parent(anchor)) ? parent(anchor) : null);
+      if (action && anchor.sheet == null && anchor.list == null) paintThreadAction(action);
     }
   }
-
   function chatFooter(list) {
-    for (let branch = list, depth = 0; branch && depth < 6; branch = parent(branch), depth++) {
+    if (!list) return;
+    for (let branch = list, depth = 0; branch && depth < 8; branch = parent(branch), depth++) {
       const host = parent(branch);
-      if (!shellNode(host) || host.children.length > 12 || original(host)?.horizontal) break;
-      const work = children(host).slice(host.children.indexOf(branch.id) + 1);
-      for (let i = 0; i < work.length && i < 48; i++) {
+      if (!shellNode(host) || original(host)?.horizontal || host.children.length > 16) break;
+      const work = children(host).filter(n => n.id !== branch.id);
+      for (let i = 0; i < work.length && i < 80; i++) {
         const n = work[i];
-        if (n.sheet != null || n.list != null || n.accessibilityId === "composer" || !shellNode(n)) continue;
+        if (n.sheet != null || n.list != null || n.accessibilityId === "composer" ||
+            [...headerNames,"search.entry"].includes(n.accessibilityId) || !shellNode(n) ||
+            ["list","scroll"].includes(kindOf(n))) continue;
         if (threadNotice(n)) return;
-        if (n.children.length <= 4) work.push(...children(n));
+        if (!interactive(n) && n.children.length <= 8) work.push(...children(n));
       }
     }
   }
@@ -2018,12 +2119,12 @@
           children(n).every(tile => readableRow(tile) && descendants(tile,4,12).some(c => kindOf(c) === "image")))) return;
     if (guildSheets.size>32) guildSheets.clear();
     guildSheets.set(sheet.id,{anchor:sheet.children[0],time:now});
-    ui.update(sheet.id, {background: palette.sheet, handleColor: palette.handle});
+    ui.update(sheet.id, {background: conversation.menu, handleColor: palette.handle});
     for (const n of nodes) {
       if (n.accessibilityId === "guild-sheet" || ["scroll","list"].includes(kindOf(n)) ||
           (n.id !== sheet.id && !interactive(n) && original(n)?.opaque && !original(n)?.horizontal &&
            n.children.length && ["view","stack"].includes(kindOf(n)) && descendants(n,3,18).some(interactive))) {
-        ui.update(n.id,{background:palette.sheet,bg:0});
+        ui.update(n.id,{background:conversation.menu,bg:0});
       }
       const pieces = children(n);
       if (!pieces.length) continue;
@@ -2033,15 +2134,24 @@
           const button = actionIn(tile);
           const image = descendants(button,4,12).find(c => kindOf(c) === "image");
           if (!image) continue;
-          const face = parent(image);
-          ui.update((face && face.id !== n.id ? face : button).id, {background:palette.row, borderColor:palette.track});
-          ui.update(image.id, {tint:palette.accent});
+          let face = image;
+          for (let p=parent(face); p && p.id !== tile.id && p.id !== n.id; p=parent(p)) {
+            if (descendants(p,3,12).some(c => kindOf(c) === "text")) break;
+            face=p;
+          }
+          if (face.id !== image.id) {
+            ui.update(face.id,{...clearFill,bg:0,background:conversation.control,radius:14});
+            for (let child=parent(image); child && child.id!==face.id; child=parent(child))
+              ui.update(child.id,{...clearFill,bg:0});
+          }
+          ui.update(image.id,{...clearFill,bg:0,tint:palette.accent});
           for (const label of descendants(tile,4,16)) if (kindOf(label) === "text") ui.update(label.id,{color:palette.ink});
         }
       } else if (pieces.every(c => divider(c) || readableRow(c)) && pieces.some(readableRow)) {
         styleGroup(n, readableRow);
         for (const row of pieces.filter(readableRow)) {
           clearRowFace(row);
+          ui.update(row.id,{background:conversation.control});
           const control = actionIn(row);
           const toggle = switchParts(control) || switchParts(row);
           if (toggle) tintSwitch(original(control)?.role === "switch" ? control : row,toggle);
@@ -2104,7 +2214,6 @@
       if (["inbox-feed","inbox-page","inbox-screen"].includes(n.accessibilityId)) root=n;
     }
     if (root===anchor && anchor.list!=null) root=ui.node(anchor.list) || anchor;
-    ui.useSystemFontIn?.(root.id);
     const section = anchor.accessibilityId?.startsWith("request-actions-") ? anchor : root;
     const nodes = descendants(section,11,360);
     for (const n of nodes) {
@@ -2229,8 +2338,7 @@
     removeSkins(true);
     if (editLayer) { editLayer.remove(); editLayer = null; }
     palette = next;
-    if (ui.useSystemFontIn) ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed, true);
-    else ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
+    ui.setAccentPalette?.(palette.accent, palette.onAccent, palette.pressed);
     conversation = {
       header: palette.canvas,
       menu: dark ? palette.canvas : mix(palette.row, palette.canvas, 0.38),
@@ -2410,7 +2518,7 @@
     ...["guild-sheet","guild-sheet-name","tab-invite","tab-settings"].map(n => [n,guildOptions]),
     ...["inbox-screen","inbox-feed","inbox-page","inbox.title",{prefix:"request-actions-"}].map(n => [n,inbox]),
     ["social-tabs",paintTabs],
-    ...["social-sensitive","social-spam","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
+    ...["social-sensitive","social-spam","social-sharing","social-servers","social-pages","social-pager","privacy-request","privacy-profile"].map(n => [n,preferenceSection]),
   ];
   for (const [match,visit] of extraSurfaces) watch(match,visit);
   for (const name of pickerAnchors) watch(name, paintPicker);
@@ -2446,13 +2554,24 @@
       clearEditing();
     } else if (editLayer && !ui.node(editLayer.cancel)) clearEditing();
   }));
-  watchers.push(ui.onEvent("pageSettle", () => forLive("social-tabs",paintTabs)));
+  watchers.push(ui.onEvent("pageSettle", () => {
+    forLive("social-tabs",paintTabs);
+    if (lastList != null) chatFooter(ui.node(lastList));
+    const list = lastSettings == null ? null : ui.node(lastSettings);
+    if (list && detailLists.has(list.id)) detailWidgets(list,detailLists.get(list.id));
+  }));
   watchers.push(ui.onEvent("submit", e => { if (e.accessibilityId === "composer") clearEditing(); }));
   watchers.push(ui.onEvent("scrollSettle", event => {
     if (event.node === lastList) chatFooter(ui.node(lastList));
     if (editingMessage) forLive(contextCancel, paintEditedMessage);
     if (joinedBar && !ui.node(joinedBar.cancel)) clearEditing();
     const scrolled = ui.node(event.node);
+    if (scrolled && ["scroll","list"].includes(kindOf(scrolled))) {
+      for (let n=scrolled,d=0; n && d<10; n=parent(n),d++) {
+        const route=detailLists.get(n.id);
+        if (route) {detailWidgets(scrolled,route);break;}
+      }
+    }
     if (scrolled && seenPanels.has(scrolled.id)) paintChannelPane(scrolled);
     const list = lastSettings == null ? null : ui.node(lastSettings);
     if (list && (event.node === list.id || event.node === list.parent)) {
@@ -2548,6 +2667,7 @@
     finishDialogWatch();
     stopPickerWatch();
     clearPickerCorners(true);
+    clearThreadSkin();
     stopGuildWatch();
     removeSkins(true);
     clearEditing();

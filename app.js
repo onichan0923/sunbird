@@ -70,18 +70,18 @@ form.onsubmit=event=>{
   get('progress').hidden=false;get('status').textContent='準備瀏覽器修補器…';get('controls').disabled=true;
   get('output').scrollIntoView({block:'nearest'});
   try {
-    worker=new Worker(new URL('./worker.js?v=110',import.meta.url),{type:'module'});
+    worker=new Worker(new URL('./worker.js?v=111',import.meta.url),{type:'module'});
     worker.onmessage=({data})=>{
       if(data.kind==='error')return fail(data.message,data.download);
       if(data.kind==='progress'){get('status').textContent=data.message;return;}
       if(data.kind==='done'){
         finish();get('progress').hidden=true;get('status').textContent='修補完成，可下載已簽署的 APK。';
         downloadUrl=URL.createObjectURL(data.apk);const save=get('save');save.href=downloadUrl;
-        save.download='discord-'+get('version').value+(get('recover').checked?'-sunbird-recovery-':'-sunbird-m3e-')+get('abi').value+'.apk';save.hidden=false;save.focus();
+        save.download='discord-'+get('version').value+(get('recover').checked?'-sunbird-recovery-':(get('theme').checked?'-sunbird-m3e-':'-sunbird-'))+get('abi').value+'.apk';save.hidden=false;save.focus();
       }
     };
     worker.onerror=e=>fail(e.message||'無法啟動修補器。請重新整理網頁後再試。',false);
     worker.postMessage({manual,files,version:get('version').value,abi:get('abi').value,density:get('density').value,language:get('language').value,
-      pkg:side?pkg:null,label:get('label').value.trim()||(side?'Discord Phoenix':null),theme:get('theme').checked,recover:get('recover').checked,plugins:Array.from(get('plugins').files)});
+      pkg:side?pkg:null,label:get('label').value.trim()||(side?'Discord Phoenix':null),theme:get('theme').checked,systemFont:get('system-font').checked,recover:get('recover').checked,plugins:Array.from(get('plugins').files)});
   } catch(error){fail(error.message,false);}
 };
